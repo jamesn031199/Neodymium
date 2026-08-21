@@ -1,0 +1,14 @@
+[submodule "jmn"]
+	path = jmn
+	url = git@github.com:jamesn031199/jmn.git
+[submodule "volk"]
+	path = volk
+	url = git@github.com:zeux/volk.git
+	branch = vulkan-sdk-1.4.350
+[submodule "stb"]
+	path = stb
+	url = git@github.com:nothings/stb.git
+[submodule "imgui"]
+	path = imgui
+	url = git@github.com:ocornut/imgui.git
+	branch = docking

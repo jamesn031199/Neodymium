@@ -12,7 +12,11 @@ workspace "Neodymium"
         cppdialect "C++17"
         
         includedirs {
-            "$(VULKAN_SDK)/Include/"
+            "$(VULKAN_SDK)/Include/",
+            "jmn/",
+            "stb/",
+            "volk/",
+            "imgui/"
         }
         
         targetdir "bin/%{cfg.buildcfg}"
@@ -49,12 +53,23 @@ workspace "Neodymium"
         disablewarnings { "4061", "4201", "4505", "4533", "4577", "4710", "4711", "5045" }
         
         files {
+            "application.hpp",
+            "vulkan_common.hpp",
+            "vulkan_context.hpp",
+            "vulkan_swap_chain.hpp",
+            "settings.hpp",
+            "imgui_user_config.hpp",
+            "common.hpp",
+            "constants.hpp",
             "main.hpp",
             "main.cpp"
         }
         
         defines {
-            "WIN32_LEAN_AND_MEAN"
+            "WIN32_LEAN_AND_MEAN",
+            "STB_SPRINTF_STATIC",
+            "VK_USE_PLATFORM_WIN32_KHR",
+            'IMGUI_USER_CONFIG="imgui_user_config.hpp"'
         }
         
         filter "configurations:Dbg"

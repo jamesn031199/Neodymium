@@ -1,0 +1,3 @@
+#ifndef COMMON_INCLUDED
+#  define COMMON_INCLUDED
+#endif // COMMON_INCLUDED
