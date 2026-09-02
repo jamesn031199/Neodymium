@@ -53,20 +53,22 @@ workspace "Neodymium"
         disablewarnings { "4061", "4201", "4505", "4533", "4577", "4710", "4711", "5045" }
         
         files {
+            "main.cpp",
+            "main.hpp",
             "application.hpp",
-            "vulkan_common.hpp",
-            "vulkan_context.hpp",
+            "vulkan_inflight_frames.hpp",
             "vulkan_swap_chain.hpp",
+            "vulkan_context.hpp",
+            "vulkan_common.hpp",
             "settings.hpp",
             "imgui_user_config.hpp",
             "common.hpp",
             "constants.hpp",
-            "main.hpp",
-            "main.cpp"
         }
         
         defines {
             "WIN32_LEAN_AND_MEAN",
+            "NOMINMAX",
             "STB_SPRINTF_STATIC",
             "VK_USE_PLATFORM_WIN32_KHR",
             'IMGUI_USER_CONFIG="imgui_user_config.hpp"'

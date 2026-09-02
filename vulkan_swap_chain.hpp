@@ -42,7 +42,7 @@ struct VulkanSwapChain
     VkDeviceMemory                dps_mem;
 };
 
-jmn::B8 Create(VulkanSwapChain &vksc, jmn::Allocator allocator, HWND window, HINSTANCE instance, VulkanContext const &ctx, Settings const &settings, jmn::Result &result);
+jmn::B8 Create(jmn::Allocator allocator, HWND window, HINSTANCE instance, VulkanContext const &ctx, Settings const &settings, VulkanSwapChain &vksc, jmn::Result &result);
 jmn::B8 Recreate(VulkanSwapChain &vksc, jmn::Allocator allocator, VulkanContext const &ctx, Settings const &settings, jmn::Result &result);
 void    Destroy(VulkanSwapChain &vksc, jmn::Allocator allocator, VulkanContext const &ctx);
 void    UpdatePresentMode(VulkanSwapChain &vksc, Settings const &settings);
@@ -451,7 +451,7 @@ namespace VulkanSwapChainInternal
 
 }
 
-jmn::B8 Create(VulkanSwapChain &vksc, jmn::Allocator allocator, HWND window, HINSTANCE instance, VulkanContext const &ctx, Settings const &settings, jmn::Result &result)
+jmn::B8 Create(jmn::Allocator allocator, HWND window, HINSTANCE instance, VulkanContext const &ctx, Settings const &settings, VulkanSwapChain &vksc, jmn::Result &result)
 {
     if (!VulkanSwapChainInternal::CreateWin32Surface(ctx, vksc.window = window, instance, vksc.surf, result)) goto ex0;
     if (!Recreate(vksc, allocator, ctx, settings, result)) goto ex1;

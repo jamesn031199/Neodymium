@@ -6,18 +6,30 @@
 #  include "settings.hpp"
 #  include "vulkan_context.hpp"
 #  include "vulkan_swap_chain.hpp"
+#  include "vulkan_inflight_frames.hpp"
 
 struct Application
 {
-    HINSTANCE        hInstance;
-    jmn::MemoryArena arena;
-    jmn::MemoryHeap  heap;
-    Settings         settings;
-    ATOM             window_class; jmn::U8 _pad0[2];
-    WINDOWPLACEMENT  main_window_placement;
-    HWND             main_window;
-    VulkanContext    vkctx;
-    VulkanSwapChain  vksc;
+    static inline jmn::Size constexpr RunningBitIndex = 0;
+
+    using Flags = jmn::B64;
+
+    enum FlagBits : Flags
+    {
+        RunningBit = (Flags)1 << RunningBitIndex,
+    };
+
+    HINSTANCE            hInstance;
+    jmn::MemoryArena     arena;
+    jmn::MemoryHeap      heap;
+    Flags                flags;
+    Settings             settings;
+    ATOM                 window_class; jmn::U8 _pad0[2];
+    WINDOWPLACEMENT      main_window_placement;
+    HWND                 main_window;
+    VulkanContext        vkctx;
+    VulkanSwapChain      vksc;
+    VulkanInflightFrames vkif;
 };
 
 jmn::B8     Create (HINSTANCE hInstance, Application &app, jmn::Result &result);
@@ -34,12 +46,101 @@ void        Destroy(Application &app);
 #  ifndef APPLICATION_IMPLEMENTATED
 #    define APPLICATION_IMPLEMENTATED
 
+#    include <stb_sprintf.h>
 #    include "constants.hpp"
 
 namespace ApplicationInternal
 {
 
-    void InitializeMemory(Application &app)
+    static char *PrintConsoleSTBSPCallback(char const *buffer, void *user_data, int length)
+    {
+        DWORD characters_written, characters_to_write = (DWORD)length;
+        JMN_ASSERT(WriteConsoleA((HANDLE)user_data, buffer, characters_to_write, &characters_written, NULL));
+        return (char *)buffer;
+    }
+
+    static void PrintConsole(HANDLE output, jmn::C8 const *format, ...)
+    {
+        char buffer[STB_SPRINTF_MIN];
+        va_list ap;
+        va_start(ap, format);
+        stbsp_vsprintfcb(PrintConsoleSTBSPCallback, output, buffer, format, ap);
+        va_end(ap);
+    }
+
+    static LRESULT WindowEventCallback(HWND window, UINT message_id, WPARAM wParam, LPARAM lParam)
+    {
+        using namespace jmn;
+
+        if (message_id == WM_CREATE)
+        {
+            auto const ci = (LPCREATESTRUCT)lParam;
+            SetWindowLongPtr(window, GWLP_USERDATA, (LONG_PTR)ci->lpCreateParams);
+            return 0;
+        }
+
+        auto &app = *(Application *)GetWindowLongPtr(window, GWLP_USERDATA);
+        switch (message_id)
+        {
+            case WM_CLOSE: PostQuitMessage((int)Result::Success); return 0;
+            case WM_KEYDOWN: switch (wParam)
+            {
+                case VK_F11:
+                {
+                    if (BitTestAndComplement64((LONG64 *)&app.settings.flags, Settings::FullScreenBitIndex))
+                    {
+                        SetWindowLong(app.main_window, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+                        JMN_ASSERT(SetWindowPlacement(app.main_window, &app.main_window_placement));
+                        JMN_ASSERT(SetWindowPos(app.main_window, HWND_TOP, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE));
+                    }
+                    else
+                    {
+                        auto const monitor = MonitorFromWindow(app.main_window, MONITOR_DEFAULTTONEAREST);
+                        MONITORINFO monitor_info;
+                        monitor_info.cbSize = sizeof(monitor_info);
+                        JMN_ASSERT(GetMonitorInfo(monitor, &monitor_info));
+
+                        JMN_ASSERT(GetWindowPlacement(app.main_window, &app.main_window_placement));
+
+                        SetWindowLong(app.main_window, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+                        JMN_ASSERT(SetWindowPos(app.main_window, HWND_TOP,
+                            monitor_info.rcMonitor.left, monitor_info.rcMonitor.top,
+                            monitor_info.rcMonitor.right - monitor_info.rcMonitor.left, monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                            SWP_FRAMECHANGED));
+                    }
+                } return 0;
+            }
+        }
+        return DefWindowProc(window, message_id, wParam, lParam);
+    }
+
+    static VkBool32 VKAPI_CALL VulkanDebugUtilsMessengerCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT, VkDebugUtilsMessengerCallbackDataEXT const *callback_data, void *)
+    {
+        HANDLE output = NULL;
+        switch (severity)
+        {
+            case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT:
+            {
+                output = GetStdHandle(STD_ERROR_HANDLE);
+            } break;
+
+            case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT:
+            {
+                output = GetStdHandle(STD_OUTPUT_HANDLE);
+            } break;
+
+            default: output = NULL; break;
+        }
+
+        if (output && output != INVALID_HANDLE_VALUE)
+        {
+            PrintConsole(output, "%s\n", callback_data->pMessage);
+        }
+
+        return VK_TRUE;
+    }
+
+    static void InitializeMemory(Application &app)
     {
         using namespace jmn;
 
@@ -51,7 +152,7 @@ namespace ApplicationInternal
         addr += ApplicationHeapSize;
     }
 
-    jmn::B8 CreateEnvironment(Application &app, jmn::Result &result)
+    static jmn::B8 CreateEnvironment(Application &app, jmn::Result &result)
     {
         using namespace jmn;
 
@@ -61,19 +162,19 @@ namespace ApplicationInternal
     ex0:return false;
     }
 
-    void DestroyEnvironment(Application &app)
+    static void DestroyEnvironment(Application &app)
     {
         if (app.settings.flags & Settings::DebugBit) JMN_ASSERT(FreeConsole());
     }
 
-    jmn::B8 CreateWindowClass(HINSTANCE hInstance, WNDPROC callback, jmn::CString8 class_name, ATOM &atom, jmn::Result &result)
+    static jmn::B8 CreateWindowClass(HINSTANCE hInstance, ATOM &atom, jmn::Result &result)
     {
         using namespace jmn;
 
         WNDCLASSEX class_def;
         class_def.cbSize        = sizeof(class_def);
         class_def.style         = 0;
-        class_def.lpfnWndProc   = callback;
+        class_def.lpfnWndProc   = WindowEventCallback;
         class_def.cbClsExtra    = 0;
         class_def.cbWndExtra    = 0;
         class_def.hInstance     = hInstance;
@@ -81,20 +182,361 @@ namespace ApplicationInternal
         class_def.hCursor       = (HCURSOR)::LoadImage(NULL, IDC_ARROW, IMAGE_CURSOR, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
         class_def.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
         class_def.lpszMenuName  = NULL;
-        class_def.lpszClassName = class_name.string;
+        class_def.lpszClassName = (LPCWSTR)ApplicationWindowClassName.string;
         class_def.hIconSm       = NULL;
         JMN_CHECK(atom = ::RegisterClassEx(&class_def), result, Result::ErrorGeneric, ex0);
         return true;
     ex0:return false;
     }
 
-    void DestroyWindowClass(ATOM atom, HINSTANCE hInstance)
+    static void DestroyWindowClass(ATOM atom, HINSTANCE hInstance)
     {
         JMN_ASSERT(UnregisterClass(MAKEINTATOM(atom), hInstance));
     }
 
-    jmn::B8 CreateMainWindow(Application &app, jmn::Result &result)
+    static jmn::B8 CreateMainWindow(Application &app, jmn::Result &result)
     {
+        using namespace jmn;
+
+        if (!CreateWindowClass(app.hInstance, app.window_class, result)) goto ex0;
+
+        auto const monitor = MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+        JMN_CHECK(monitor, result, Result::ErrorGeneric, ex1);
+
+        MONITORINFO monitor_info;
+        monitor_info.cbSize = sizeof(monitor_info);
+        JMN_CHECK(GetMonitorInfo(monitor, &monitor_info), result, Result::ErrorGeneric, ex1);
+
+        DWORD style = 0, ex_style = 0;
+
+        RECT rect, windowed_rect;
+        windowed_rect.left   = monitor_info.rcWork.left + (monitor_info.rcWork.right - monitor_info.rcWork.left - (LONG)app.settings.window_size.x) / 2;
+        windowed_rect.top    = monitor_info.rcWork.top  + (monitor_info.rcWork.bottom - monitor_info.rcWork.top - (LONG)app.settings.window_size.y) / 2;
+        windowed_rect.right  = windowed_rect.left + (LONG)app.settings.window_size.x;
+        windowed_rect.bottom = windowed_rect.top  + (LONG)app.settings.window_size.y;
+        JMN_CHECK(AdjustWindowRectEx(&windowed_rect, WS_OVERLAPPEDWINDOW, FALSE, 0), result, Result::ErrorGeneric, ex1);
+
+        if (app.settings.flags & Settings::FullScreenBit)
+        {
+            style    = WS_POPUP;
+            ex_style = 0;
+
+            rect = monitor_info.rcMonitor;
+        }
+        else
+        {
+            style    = WS_OVERLAPPEDWINDOW;
+            ex_style = 0;
+
+            rect = windowed_rect;
+        }
+
+        app.main_window = CreateWindowEx(ex_style, MAKEINTATOM(app.window_class), (LPCWSTR)ApplicationNameUTF16.string, style,
+            rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+            NULL, NULL, app.hInstance, &app);
+        JMN_CHECK(app.main_window, result, Result::ErrorGeneric, ex1);
+
+        app.main_window_placement.length = sizeof(app.main_window_placement);
+        JMN_CHECK(GetWindowPlacement(app.main_window, &app.main_window_placement), result, Result::ErrorGeneric, ex2);
+
+        if (app.settings.flags & Settings::FullScreenBit)
+        {
+            app.main_window_placement.rcNormalPosition = windowed_rect;
+        }
+
+        return true;
+    ex2:JMN_ASSERT(DestroyWindow(app.main_window));
+    ex1:DestroyWindowClass(app.window_class, app.hInstance);
+    ex0:return false;
+    }
+
+    static void DestroyMainWindow(Application &app)
+    {
+        JMN_ASSERT(DestroyWindow(app.main_window));
+        DestroyWindowClass(app.window_class, app.hInstance);
+    }
+
+    static jmn::B8 CreateVulkanBackend(Application &app, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        if (!Create(MakeAllocator(app.heap), ApplicationVkVersion, (app.settings.flags & Settings::DebugBit) ? VulkanDebugUtilsMessengerCallback : NULL, &app, app.vkctx, result)) goto ex0;
+        if (!Create(MakeAllocator(app.heap), app.main_window, app.hInstance, app.vkctx, app.settings, app.vksc, result)) goto ex1;
+        if (!Create(MakeAllocator(app.heap), app.vkctx, 2, app.vkif, result)) goto ex2;
+
+        return true;
+    //ex3:Destroy(app.vkif, MakeAllocator(app.heap), app.vkctx);
+    ex2:Destroy(app.vksc, MakeAllocator(app.heap), app.vkctx);
+    ex1:Destroy(app.vkctx);
+    ex0:return false;
+    }
+
+    static void DestroyVulkanBackend(Application &app)
+    {
+        Destroy(app.vkif, MakeAllocator(app.heap), app.vkctx);
+        Destroy(app.vksc, MakeAllocator(app.heap), app.vkctx);
+        Destroy(app.vkctx);
+    }
+
+    static void TransitionSwapChainImageToDraw(Application &app)
+    {
+        using namespace jmn;
+
+        auto const cb = app.vkif.cb[app.vkif.index];
+
+        VkImageMemoryBarrier2 imb2[2];
+        imb2[0].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        imb2[0].pNext               = NULL;
+        imb2[0].srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        imb2[0].srcAccessMask       = VK_ACCESS_2_NONE;
+        imb2[0].dstStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        imb2[0].dstAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        imb2[0].oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+        imb2[0].newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        imb2[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[0].image               = app.vksc.img_a[app.vksc.img_i];
+        imb2[0].subresourceRange    ={ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+        imb2[1].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        imb2[1].pNext               = NULL;
+        imb2[1].srcStageMask        = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        imb2[1].srcAccessMask       = 0;
+        imb2[1].dstStageMask        = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        imb2[1].dstAccessMask       = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        imb2[1].oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+        imb2[1].newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        imb2[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[1].image               = app.vksc.dps_img;
+        imb2[1].subresourceRange    ={ VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, app.vksc.img_i, 1 };
+
+        VkDependencyInfo di;
+        di.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        di.pNext                    = NULL;
+        di.dependencyFlags          = 0;
+        di.memoryBarrierCount       = 0;
+        di.pMemoryBarriers          = NULL;
+        di.bufferMemoryBarrierCount = 0;
+        di.pBufferMemoryBarriers    = NULL;
+        di.imageMemoryBarrierCount  = (U32)Length(imb2);
+        di.pImageMemoryBarriers     = imb2;
+        vkCmdPipelineBarrier2(cb, &di);
+    }
+
+    static void TransitionSwapChainImageToPresent(Application &app)
+    {
+        using namespace jmn;
+
+        auto const cb = app.vkif.cb[app.vkif.index];
+
+        VkImageMemoryBarrier2 imb2[1];
+        imb2[0].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        imb2[0].pNext               = NULL;
+        imb2[0].srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        imb2[0].srcAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        imb2[0].dstStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        imb2[0].dstAccessMask       = VK_ACCESS_2_MEMORY_READ_BIT;
+        imb2[0].oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        imb2[0].newLayout           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        imb2[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[0].image               = app.vksc.img_a[app.vksc.img_i];
+        imb2[0].subresourceRange    ={ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        VkDependencyInfo di;
+        di.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        di.pNext                    = NULL;
+        di.dependencyFlags          = 0;
+        di.memoryBarrierCount       = 0;
+        di.pMemoryBarriers          = NULL;
+        di.bufferMemoryBarrierCount = 0;
+        di.pBufferMemoryBarriers    = NULL;
+        di.imageMemoryBarrierCount  = (U32)Length(imb2);
+        di.pImageMemoryBarriers     = imb2;
+        vkCmdPipelineBarrier2(cb, &di);
+    }
+
+    static void BeginDraw(Application &app)
+    {
+        using namespace jmn;
+
+        auto const cb = app.vkif.cb[app.vkif.index];
+
+        VkRenderingAttachmentInfo color_attachments[1];
+        color_attachments[0].sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_attachments[0].pNext              = NULL;
+        color_attachments[0].imageView          = app.vksc.imgv_a[app.vksc.img_i];
+        color_attachments[0].imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_attachments[0].resolveMode        = VK_RESOLVE_MODE_NONE;
+        color_attachments[0].resolveImageView   = VK_NULL_HANDLE;
+        color_attachments[0].resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        color_attachments[0].loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachments[0].storeOp            = VK_ATTACHMENT_STORE_OP_STORE;
+        color_attachments[0].clearValue.color.float32[0] = 0.0f;
+        color_attachments[0].clearValue.color.float32[1] = 0.0f;
+        color_attachments[0].clearValue.color.float32[2] = 0.0f;
+        color_attachments[0].clearValue.color.float32[3] = 0.0f;
+
+        VkRenderingAttachmentInfo depth_attachment;
+        depth_attachment.sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth_attachment.pNext              = NULL;
+        depth_attachment.imageView          = app.vksc.dps_imgv_a[app.vksc.img_i];
+        depth_attachment.imageLayout        = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth_attachment.resolveMode        = VK_RESOLVE_MODE_NONE;
+        depth_attachment.resolveImageView   = VK_NULL_HANDLE;
+        depth_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depth_attachment.loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth_attachment.storeOp            = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth_attachment.clearValue.depthStencil.depth   = 0.0f;
+        depth_attachment.clearValue.depthStencil.stencil = 0;
+
+        VkRenderingInfo ri;
+        ri.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.pNext                = NULL;
+        ri.flags                = 0;
+        ri.renderArea           ={ { 0, 0 }, app.vksc.ext };
+        ri.layerCount           = app.vksc.ial;
+        ri.viewMask             = 0;
+        ri.colorAttachmentCount = (U32)Length(color_attachments);
+        ri.pColorAttachments    = color_attachments;
+        ri.pDepthAttachment     = &depth_attachment;
+        ri.pStencilAttachment   = &depth_attachment;
+        vkCmdBeginRendering(cb, &ri);
+    }
+
+    static void EndDraw(Application &app)
+    {
+        using namespace jmn;
+
+        auto const cb = app.vkif.cb[app.vkif.index];
+
+        vkCmdEndRendering(cb);
+    }
+
+    static jmn::B8 ProcessMessages(jmn::Result &result)
+    {
+        using namespace jmn;
+
+        for (MSG message; PeekMessage(&message, NULL, 0, 0, PM_REMOVE);)
+        {
+            TranslateMessage(&message);
+            DispatchMessage(&message);
+            if (message.message == WM_QUIT)
+            {
+                result = (Result)message.wParam;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static jmn::B8 UpdateSwapChain(Application &app, jmn::Result &result)
+    {
+        if (app.vksc.flags & VulkanSwapChain::OutdatedBit)
+        {
+            VK_CHECK(vkWaitForFences(app.vkctx.dev, app.vkif.count, app.vkif.sc_imgp, VK_TRUE, UINT64_MAX), result, ex0);
+
+            if (!Recreate(app.vksc, MakeAllocator(app.heap), app.vkctx, app.settings, result)) goto ex0;
+
+            //ImGui_ImplVulkan_PipelineInfo new_pipeline_info;
+            //SetImGuiMainPipelineInfo(app, new_pipeline_info);
+            //ImGui_ImplVulkan_CreateMainPipeline(&new_pipeline_info);
+            //vkDestroyPipeline(app.vkc.dev, app.draw_pl, app.vkc.ac);
+            //if (!CreateDrawPipeline(app, result)) goto ex0;
+        }
+        return true;
+    ex0:return false;
+    }
+
+    static jmn::B8 AcquireFrame(Application &app, jmn::Result &result)
+    {
+        VK_CHECK(vkWaitForFences(app.vkctx.dev, 1, app.vkif.sc_imgp + app.vkif.index, VK_TRUE, UINT64_MAX), result, ex0);
+        VK_CHECK(vkResetFences(app.vkctx.dev, 1, app.vkif.sc_imgp + app.vkif.index), result, ex0);
+
+        if (!Acquire(app.vksc, app.vkctx, app.vkif.sc_imga[app.vkif.index], result)) goto ex0;
+
+        return true;
+    ex0:return false;
+    }
+
+    static jmn::B8 RecordFrame(Application &app, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        auto const cb = app.vkif.cb[app.vkif.index];
+
+        {
+            VkCommandBufferBeginInfo cbbi;
+            cbbi.sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            cbbi.pNext            = NULL;
+            cbbi.flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            cbbi.pInheritanceInfo = NULL;
+            VK_CHECK(vkBeginCommandBuffer(cb, &cbbi), result, ex0);
+        }
+
+        TransitionSwapChainImageToDraw(app);
+
+        BeginDraw(app);
+        //{
+        //    VkDeviceSize offset = 0, size = app.draw_vtx_count * sizeof(Application::DrawVertex), stride = sizeof(Application::DrawVertex);
+        //    vkCmdBindVertexBuffers2(cb, 0, 1, &app.draw_buffer, &offset, &size, &stride);
+        //    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, app.draw_pl);
+        //    vkCmdDraw(cb, (U32)app.draw_vtx_count, 1, 0, 0);
+        //    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
+        //}
+        EndDraw(app);
+
+        TransitionSwapChainImageToPresent(app);
+
+        VK_CHECK(vkEndCommandBuffer(cb), result, ex0);
+        return true;
+    ex0:return false;
+    }
+
+    static jmn::B8 PresentFrame(Application &app, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        VkSemaphoreSubmitInfo     wssi[1];
+        VkCommandBufferSubmitInfo cbsi[1];
+        VkSemaphoreSubmitInfo     sssi[1];
+
+        wssi[0].sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        wssi[0].pNext       = NULL;
+        wssi[0].semaphore   = app.vkif.sc_imga[app.vkif.index];
+        wssi[0].value       = 0;
+        wssi[0].stageMask   = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        wssi[0].deviceIndex = 0;
+
+        cbsi[0].sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        cbsi[0].pNext         = NULL;
+        cbsi[0].commandBuffer = app.vkif.cb[app.vkif.index];
+        cbsi[0].deviceMask    = 0;
+
+        sssi[0].sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        sssi[0].pNext       = NULL;
+        sssi[0].semaphore   = app.vkif.sc_imgr[app.vkif.index];
+        sssi[0].value       = 0;
+        sssi[0].stageMask   = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        sssi[0].deviceIndex = 0;
+
+        VkSubmitInfo2 si2;
+        si2.sType                    = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        si2.pNext                    = NULL;
+        si2.flags                    = 0;
+        si2.waitSemaphoreInfoCount   = (U32)Length(wssi);
+        si2.pWaitSemaphoreInfos      = wssi;
+        si2.commandBufferInfoCount   = (U32)Length(cbsi);
+        si2.pCommandBufferInfos      = cbsi;
+        si2.signalSemaphoreInfoCount = (U32)Length(sssi);
+        si2.pSignalSemaphoreInfos    = sssi;
+        VK_CHECK(vkQueueSubmit2(app.vkctx.g_q, 1, &si2, VK_NULL_HANDLE), result, ex0);
+
+        if (!Present(app.vksc, app.vkctx, 1, app.vkif.sc_imgr + app.vkif.index, app.vkif.sc_imgp[app.vkif.index], result)) goto ex0;
+
+        app.vkif.index = (app.vkif.index + 1) % app.vkif.count;
+        return true;
+    ex0:return false;
 
     }
 
@@ -107,11 +549,15 @@ jmn::B8 Create(HINSTANCE hInstance, Application &app, jmn::Result &result)
     app.hInstance = hInstance;
 
     ApplicationInternal::InitializeMemory(app);
-    if (!Create(app.arena.MakeTemporaryMemory(), SettingsFileName, app.settings, result)) goto ex0;
+    if (!Create(MakeAllocator(app.heap), SettingsFileName, app.settings, result)) goto ex0;
     if (!ApplicationInternal::CreateEnvironment(app, result)) goto ex1;
+    if (!ApplicationInternal::CreateMainWindow(app, result)) goto ex2;
+    if (!ApplicationInternal::CreateVulkanBackend(app, result)) goto ex3;
 
     return true;
-//ex2:ApplicationInternal::DestroyEnvironment(app);
+//ex4:ApplicationInternal::DestroyVulkanBackend(app);
+ex3:ApplicationInternal::DestroyMainWindow(app);
+ex2:ApplicationInternal::DestroyEnvironment(app);
 ex1:Destroy(app.settings, SettingsFileName);
 ex0:return false;
 }
@@ -122,13 +568,30 @@ jmn::Result Run(Application &app)
 
     auto result = Result::Success;
 
+    ShowWindow(app.main_window, SW_SHOW);
 
+    app.flags |= Application::RunningBit;
+    while (app.flags & Application::RunningBit)
+    {
+        if (!ApplicationInternal::ProcessMessages(result)) break;
+        if (!ApplicationInternal::UpdateSwapChain(app, result)) break;
+        if (!ApplicationInternal::AcquireFrame(app, result)) break;
+        if (!ApplicationInternal::RecordFrame (app, result)) break;
+        if (!ApplicationInternal::PresentFrame(app, result)) break;
+    }
+    app.flags &=~ Application::RunningBit;
 
-    return result;
+    ShowWindow(app.main_window, SW_HIDE);
+
+    VK_CHECK(vkDeviceWaitIdle(app.vkctx.dev), result, ex0);
+
+ex0:return result;
 }
 
 void Destroy(Application &app)
 {
+    ApplicationInternal::DestroyVulkanBackend(app);
+    ApplicationInternal::DestroyMainWindow(app);
     ApplicationInternal::DestroyEnvironment(app);
     Destroy(app.settings, SettingsFileName);
 }

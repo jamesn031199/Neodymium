@@ -45,7 +45,7 @@ struct VulkanContext
     VkQueue                                               tw_q;
 };
 
-jmn::B8 Create(VulkanContext &vkc, jmn::Allocator allocator, jmn::U32 api_version, PFN_vkDebugUtilsMessengerCallbackEXT dbg_callback, void *dbg_user_data, jmn::Result &result);
+jmn::B8 Create(jmn::Allocator allocator, jmn::U32 api_version, PFN_vkDebugUtilsMessengerCallbackEXT dbg_callback, void *dbg_user_data, VulkanContext &vkc, jmn::Result &result);
 void    Destroy(VulkanContext &vkc);
 
 #endif // VULKAN_CONTEXT_INCLUDED
@@ -523,11 +523,12 @@ namespace VulkanContextInternal
         required_ext_name_array[required_ext_name_count++] = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
         required_ext_name_array[required_ext_name_count++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
 
-    #ifdef DEBUG_MODE
-        optional_ext_name_array[optional_ext_name_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-        optional_lyr_name_array[optional_lyr_name_count++] = "VK_LAYER_KHRONOS_validation";
-        optional_lyr_name_array[optional_lyr_name_count++] = "VK_LAYER_LUNARG_monitor";
-    #endif
+        if (dbg_callback)
+        {
+            optional_ext_name_array[optional_ext_name_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+            optional_lyr_name_array[optional_lyr_name_count++] = "VK_LAYER_KHRONOS_validation";
+            optional_lyr_name_array[optional_lyr_name_count++] = "VK_LAYER_LUNARG_monitor";
+        }
 
         if (!AppendInstanceLayers    (vkc.allocator, required_lyr_name_count, required_lyr_name_array, optional_lyr_name_count, optional_lyr_name_array, enabled_lyr_name_count, enabled_lyr_name_array, result)) goto ex0;
         if (!AppendInstanceExtensions(vkc.allocator, required_ext_name_count, required_ext_name_array, optional_ext_name_count, optional_ext_name_array, enabled_ext_name_count, enabled_ext_name_array, result)) goto ex0;
@@ -555,7 +556,6 @@ namespace VulkanContextInternal
 
         volkLoadInstanceOnly(vkc.ins);
 
-    #ifdef DEBUG_MODE
         if (vkCreateDebugUtilsMessengerEXT)
         {
             VkDebugUtilsMessengerCreateInfoEXT ci;
@@ -568,15 +568,10 @@ namespace VulkanContextInternal
             ci.pUserData       = dbg_user_data;
             VK_CHECK(vkCreateDebugUtilsMessengerEXT(vkc.ins, &ci, vkc.ac, &vkc.dbg_msgr), result, ex1);
         }
-    #else
-        (void)dbg_callback, (void)dbg_user_data;
-    #endif
 
         return true;
-    #ifdef DEBUG_MODE
-        //ex2:if (vkc.dbg_msgr != VK_NULL_HANDLE) vkDestroyDebugUtilsMessengerEXT(vkc.ins, vkc.dbg_msgr, vkc.ac);
-        ex1:vkDestroyInstance(vkc.ins, vkc.ac);
-    #endif
+    //ex2:if (vkc.dbg_msgr != VK_NULL_HANDLE) vkDestroyDebugUtilsMessengerEXT(vkc.ins, vkc.dbg_msgr, vkc.ac);
+    ex1:vkDestroyInstance(vkc.ins, vkc.ac);
     ex0:return false;
     }
 
@@ -779,9 +774,7 @@ namespace VulkanContextInternal
 
     static void DestroyInstance(VulkanContext &vkc)
     {
-    #ifdef DEBUG_MODE
         if (vkc.dbg_msgr != VK_NULL_HANDLE) vkDestroyDebugUtilsMessengerEXT(vkc.ins, vkc.dbg_msgr, vkc.ac);
-    #endif
         vkDestroyInstance(vkc.ins, vkc.ac);
     }
 
@@ -795,7 +788,7 @@ namespace VulkanContextInternal
 
 }
 
-jmn::B8 Create(VulkanContext &vkc, jmn::Allocator allocator, jmn::U32 api_version, PFN_vkDebugUtilsMessengerCallbackEXT dbg_callback, void *dbg_user_data, jmn::Result &result)
+jmn::B8 Create(jmn::Allocator allocator, jmn::U32 api_version, PFN_vkDebugUtilsMessengerCallbackEXT dbg_callback, void *dbg_user_data, VulkanContext &vkc, jmn::Result &result)
 {
     if (!vkc.heap.Create(vkc.allocator = allocator, VulkanContext::HeapSize, jmn::MemoryHeap::DefaultMinBlockSize, result)) goto ex0;
     if (!VulkanContextInternal::CreateEnvironment   (vkc, result)) goto ex1;
