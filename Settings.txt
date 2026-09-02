@@ -1,6 +1,0 @@
-# Settings file for Neodymium
-Debug : 1
-VSync : 1
-FullScreen : 0
-HDR : 1
-WindowResolution : [1280, 720]
