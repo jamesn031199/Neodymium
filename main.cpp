@@ -20,6 +20,7 @@
 #define VULKAN_CONTEXT_IMPLEMENTATION
 #define VULKAN_SWAP_CHAIN_IMPLEMENTATION
 #define VULKAN_INFLIGHT_FRAMES_IMPLEMENTATION
+#define AUDIO_CAPTURE_IMPLEMENTATION
 #define APPLICATION_IMPLEMENTATION
 
 #include <Hydrogen.hpp>
@@ -64,10 +65,8 @@
 #include "vulkan_context.hpp"
 #include "vulkan_swap_chain.hpp"
 #include "vulkan_inflight_frames.hpp"
+#include "audio_capture.hpp"
 #include "application.hpp"
-
-#define HR_CHECK(expr, resvar, resval, jmplbl) JMN_CHECK(SUCCEEDED(expr), resvar, resval, jmplbl)
-#define SafeRelease(ptr) if (ptr) { ptr->Release(); ptr = NULL; } else {}
 
 int wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nShowCmd*/)
 {

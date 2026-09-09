@@ -56,6 +56,7 @@ workspace "Neodymium"
             "main.cpp",
             "main.hpp",
             "application.hpp",
+            "audio_capture.hpp",
             "vulkan_inflight_frames.hpp",
             "vulkan_swap_chain.hpp",
             "vulkan_context.hpp",

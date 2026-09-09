@@ -3,10 +3,14 @@
 
 #  include <Windows.h>
 #  include <Hydrogen.hpp>
+#  include <imgui.h>
+#  include <backends/imgui_impl_win32.h>
+#  include <backends/imgui_impl_vulkan.h>
 #  include "settings.hpp"
 #  include "vulkan_context.hpp"
 #  include "vulkan_swap_chain.hpp"
 #  include "vulkan_inflight_frames.hpp"
+#  include "audio_capture.hpp"
 
 struct Application
 {
@@ -30,6 +34,7 @@ struct Application
     VulkanContext        vkctx;
     VulkanSwapChain      vksc;
     VulkanInflightFrames vkif;
+    AudioCapture         ac;
 };
 
 jmn::B8     Create (HINSTANCE hInstance, Application &app, jmn::Result &result);
@@ -138,6 +143,45 @@ namespace ApplicationInternal
         }
 
         return VK_TRUE;
+    }
+
+    static void *ImGuiAllocCallback(size_t size, void *user_data)
+    {
+        auto const app = (Application *)user_data;
+        return (void *)app->heap.Alloc((jmn::Size)size);
+    }
+
+    static void ImGuiFreeCallback(void *ptr, void *user_data)
+    {
+        auto const app = (Application *)user_data;
+        app->heap.Free((jmn::Addr)ptr);
+    }
+
+    static int ImGuiCreateVkSurfaceCallback(ImGuiViewport* vp, ImU64 vk_inst, const void* vk_allocators, ImU64* out_vk_surface)
+    {
+        VkWin32SurfaceCreateInfoKHR ci;
+        ci.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+        ci.pNext     = NULL;
+        ci.flags     = 0;
+        ci.hinstance = ::GetModuleHandle(NULL);
+        ci.hwnd      = (HWND)vp->PlatformHandleRaw;
+        return (int)vkCreateWin32SurfaceKHR((VkInstance)vk_inst, &ci, (VkAllocationCallbacks *)vk_allocators, (VkSurfaceKHR *)out_vk_surface);
+    }
+
+    static void SetImGuiMainPipelineInfo(Application &app, ImGui_ImplVulkan_PipelineInfo &info)
+    {
+        info.RenderPass                  = VK_NULL_HANDLE;
+        info.Subpass                     = UINT32_MAX;
+        info.MSAASamples                 = VK_SAMPLE_COUNT_1_BIT;
+        info.ExtraDynamicStates          ={};
+        info.PipelineRenderingCreateInfo.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR; // Valid if .sType == VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR
+        info.PipelineRenderingCreateInfo.pNext                   = NULL;
+        info.PipelineRenderingCreateInfo.viewMask                = 0;
+        info.PipelineRenderingCreateInfo.colorAttachmentCount    = 1;
+        info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &app.vksc.fmt;
+        info.PipelineRenderingCreateInfo.depthAttachmentFormat   = VulkanSwapChain::DepthFormat;
+        info.PipelineRenderingCreateInfo.stencilAttachmentFormat = VulkanSwapChain::DepthFormat;
+        info.SwapChainImageUsage         = 0;
     }
 
     static void InitializeMemory(Application &app)
@@ -276,6 +320,63 @@ namespace ApplicationInternal
         Destroy(app.vkif, MakeAllocator(app.heap), app.vkctx);
         Destroy(app.vksc, MakeAllocator(app.heap), app.vkctx);
         Destroy(app.vkctx);
+    }
+
+    static jmn::B8 CreateGUIBackend(Application &app, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        JMN_CHECK(IMGUI_CHECKVERSION(), result, Result::ErrorNotSupported, ex0);
+        ImGui::SetAllocatorFunctions(ImGuiAllocCallback, ImGuiFreeCallback, &app);
+        JMN_CHECK(ImGui::CreateContext(), result, Result::ErrorGeneric, ex0);
+
+        auto &IO = ImGui::GetIO();
+
+        IO.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        IO.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        IO.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        IO.IniFilename  = NULL;
+
+        ImGui::StyleColorsDark();
+
+        JMN_CHECK(ImGui_ImplWin32_Init(app.main_window), result, Result::ErrorGeneric, ex1);
+
+        {
+            auto &PIO = ImGui::GetPlatformIO();
+            PIO.Platform_CreateVkSurface = ImGuiCreateVkSurfaceCallback;
+
+            ImGui_ImplVulkan_InitInfo ii ={};
+            ii.ApiVersion          = ApplicationVkVersion;
+            ii.Instance            = app.vkctx.ins;
+            ii.PhysicalDevice      = app.vkctx.pd;
+            ii.Device              = app.vkctx.dev;
+            ii.QueueFamily         = app.vkctx.g_qfi;
+            ii.Queue               = app.vkctx.g_q;
+            ii.DescriptorPool      = VK_NULL_HANDLE;
+            ii.DescriptorPoolSize  = 1024;
+            ii.MinImageCount       = app.vksc.mic;
+            ii.ImageCount          = app.vksc.img_c;
+            ii.PipelineCache       = VK_NULL_HANDLE;
+            SetImGuiMainPipelineInfo(app, ii.PipelineInfoMain);
+            ii.UseDynamicRendering = true;
+            ii.Allocator           = app.vkctx.ac;
+            ii.CheckVkResultFn     = [](VkResult x) { JMN_ASSERT(x == VK_SUCCESS); };
+            ii.MinAllocationSize   = (VkDeviceSize)MiB(1);
+            JMN_CHECK(ImGui_ImplVulkan_Init(&ii), result, Result::ErrorGeneric, ex2);
+        }
+
+        return true;
+    //ex3:ImGui_ImplVulkan_Shutdown();
+    ex2:ImGui_ImplWin32_Shutdown();
+    ex1:ImGui::DestroyContext();
+    ex0:return false;
+    }
+
+    static void DestroyGUIBackend(Application &)
+    {
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
     }
 
     static void TransitionSwapChainImageToDraw(Application &app)
@@ -438,14 +539,25 @@ namespace ApplicationInternal
 
             if (!Recreate(app.vksc, MakeAllocator(app.heap), app.vkctx, app.settings, result)) goto ex0;
 
-            //ImGui_ImplVulkan_PipelineInfo new_pipeline_info;
-            //SetImGuiMainPipelineInfo(app, new_pipeline_info);
-            //ImGui_ImplVulkan_CreateMainPipeline(&new_pipeline_info);
+            ImGui_ImplVulkan_PipelineInfo new_pipeline_info;
+            SetImGuiMainPipelineInfo(app, new_pipeline_info);
+            ImGui_ImplVulkan_CreateMainPipeline(&new_pipeline_info);
+
             //vkDestroyPipeline(app.vkc.dev, app.draw_pl, app.vkc.ac);
             //if (!CreateDrawPipeline(app, result)) goto ex0;
         }
         return true;
     ex0:return false;
+    }
+
+    static void ProcessGUI(Application &)
+    {
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+        //RecordImGuiFrame(app);
+        ImGui::EndFrame();
+        ImGui::Render();
     }
 
     static jmn::B8 AcquireFrame(Application &app, jmn::Result &result)
@@ -553,9 +665,13 @@ jmn::B8 Create(HINSTANCE hInstance, Application &app, jmn::Result &result)
     if (!ApplicationInternal::CreateEnvironment(app, result)) goto ex1;
     if (!ApplicationInternal::CreateMainWindow(app, result)) goto ex2;
     if (!ApplicationInternal::CreateVulkanBackend(app, result)) goto ex3;
+    if (!ApplicationInternal::CreateGUIBackend(app, result)) goto ex4;
+    if (!Create(app.ac, result)) goto ex5;
 
     return true;
-//ex4:ApplicationInternal::DestroyVulkanBackend(app);
+//ex6:Destroy(app.ac);
+ex5:ApplicationInternal::DestroyGUIBackend(app);
+ex4:ApplicationInternal::DestroyVulkanBackend(app);
 ex3:ApplicationInternal::DestroyMainWindow(app);
 ex2:ApplicationInternal::DestroyEnvironment(app);
 ex1:Destroy(app.settings, SettingsFileName);
@@ -575,6 +691,7 @@ jmn::Result Run(Application &app)
     {
         if (!ApplicationInternal::ProcessMessages(result)) break;
         if (!ApplicationInternal::UpdateSwapChain(app, result)) break;
+        ApplicationInternal::ProcessGUI(app);
         if (!ApplicationInternal::AcquireFrame(app, result)) break;
         if (!ApplicationInternal::RecordFrame (app, result)) break;
         if (!ApplicationInternal::PresentFrame(app, result)) break;
@@ -590,6 +707,8 @@ ex0:return result;
 
 void Destroy(Application &app)
 {
+    Destroy(app.ac);
+    ApplicationInternal::DestroyGUIBackend(app);
     ApplicationInternal::DestroyVulkanBackend(app);
     ApplicationInternal::DestroyMainWindow(app);
     ApplicationInternal::DestroyEnvironment(app);

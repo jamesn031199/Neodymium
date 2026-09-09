@@ -40,4 +40,5 @@
 #include "vulkan_common.hpp"
 #include "vulkan_context.hpp"
 #include "vulkan_swap_chain.hpp"
+#include "audio_capture.hpp"
 #include "application.hpp"
