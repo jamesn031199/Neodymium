@@ -12,6 +12,14 @@
 #  include "vulkan_inflight_frames.hpp"
 #  include "audio_capture.hpp"
 
+struct Vertex
+{
+    jmn::V2S16 p;
+    jmn::U16   z;
+    jmn::U16   s;
+    jmn::V4U8  c;
+};
+
 struct Application
 {
     static inline jmn::Size constexpr RunningBitIndex = 0;
@@ -35,6 +43,14 @@ struct Application
     VulkanSwapChain      vksc;
     VulkanInflightFrames vkif;
     AudioCapture         ac;
+
+    VkPipelineLayout     draw_pll;
+    VkPipeline           draw_pl;
+    VkBuffer             draw_buffer;
+    VkDeviceMemory       draw_memory;
+    VkBuffer             copy_buffer;
+    VkDeviceMemory       copy_memory;
+    jmn::Addr            copy_addr;
 };
 
 jmn::B8     Create (HINSTANCE hInstance, Application &app, jmn::Result &result);
@@ -53,6 +69,8 @@ void        Destroy(Application &app);
 
 #    include <stb_sprintf.h>
 #    include "constants.hpp"
+#    include "draw.vert.spv"
+#    include "draw.frag.spv"
 
 namespace ApplicationInternal
 {
@@ -379,6 +397,308 @@ namespace ApplicationInternal
         ImGui::DestroyContext();
     }
 
+    static jmn::B8 CreateDrawBuffers(Application &app, jmn::Result &result)
+    {
+        VkDeviceSize const size = sizeof(Vertex) * app.ac.fmt->nSamplesPerSec;
+
+        if (!Create(app.vkctx.ac, app.vkctx.dev, size, VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_2_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT, app.draw_buffer, result)) goto ex0;
+        if (!AllocateDedicated(app.vkctx.ac, app.vkctx.pd_mp2.memoryProperties, app.vkctx.dev, app.draw_buffer, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, app.draw_memory, result)) goto ex1;
+        VK_CHECK(vkBindBufferMemory(app.vkctx.dev, app.draw_buffer, app.draw_memory, 0), result, ex2);
+
+        if (!Create(app.vkctx.ac, app.vkctx.dev, size, VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT, app.copy_buffer, result)) goto ex2;
+        if (!AllocateDedicated(app.vkctx.ac, app.vkctx.pd_mp2.memoryProperties, app.vkctx.dev, app.copy_buffer, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, app.copy_memory, result))
+            if (!AllocateDedicated(app.vkctx.ac, app.vkctx.pd_mp2.memoryProperties, app.vkctx.dev, app.copy_buffer, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, app.copy_memory, result)) goto ex3;
+        VK_CHECK(vkBindBufferMemory(app.vkctx.dev, app.copy_buffer, app.copy_memory, 0), result, ex4);
+        VK_CHECK(vkMapMemory(app.vkctx.dev, app.copy_memory, 0, size, 0, (void **)&app.copy_addr), result, ex4);
+
+        return true;
+    ex4:vkFreeMemory(app.vkctx.dev, app.copy_memory, app.vkctx.ac);
+    ex3:vkDestroyBuffer(app.vkctx.dev, app.copy_buffer, app.vkctx.ac);
+    ex2:vkFreeMemory(app.vkctx.dev, app.draw_memory, app.vkctx.ac);
+    ex1:vkDestroyBuffer(app.vkctx.dev, app.draw_buffer, app.vkctx.ac);
+    ex0:return false;
+    }
+
+    static void DestroyDrawBuffers(Application &app)
+    {
+        vkFreeMemory(app.vkctx.dev, app.copy_memory, app.vkctx.ac);
+        vkDestroyBuffer(app.vkctx.dev, app.copy_buffer, app.vkctx.ac);
+        vkFreeMemory(app.vkctx.dev, app.draw_memory, app.vkctx.ac);
+        vkDestroyBuffer(app.vkctx.dev, app.draw_buffer, app.vkctx.ac);
+    }
+
+    static jmn::B8 CreateDrawPipeline(Application &app, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        VkShaderModuleCreateInfo        sm_ci[2];
+        VkPipelineShaderStageCreateInfo pss_ci[2];
+        {
+            pss_ci[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            sm_ci[0] .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+
+            pss_ci[0].pNext = &sm_ci[0];
+            sm_ci[0] .pNext = NULL;
+
+            pss_ci[0].flags               = 0;
+            pss_ci[0].stage               = VK_SHADER_STAGE_VERTEX_BIT;
+            pss_ci[0].module              = VK_NULL_HANDLE;
+            pss_ci[0].pName               = "main";
+            pss_ci[0].pSpecializationInfo = NULL;
+
+            sm_ci[0].flags    = 0;
+            sm_ci[0].codeSize = sizeof(draw_vert_spv);
+            sm_ci[0].pCode    = draw_vert_spv;
+        }
+        {
+            pss_ci[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            sm_ci[1] .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+
+            pss_ci[1].pNext = &sm_ci[1];
+            sm_ci[1] .pNext = NULL;
+
+            pss_ci[1].flags               = 0;
+            pss_ci[1].stage               = VK_SHADER_STAGE_FRAGMENT_BIT;
+            pss_ci[1].module              = VK_NULL_HANDLE;
+            pss_ci[1].pName               = "main";
+            pss_ci[1].pSpecializationInfo = NULL;
+
+            sm_ci[1].flags    = 0;
+            sm_ci[1].codeSize = sizeof(draw_frag_spv);
+            sm_ci[1].pCode    = draw_frag_spv;
+        }
+
+        VkVertexInputBindingDescription vibd[1];
+        vibd[0].binding   = 0;
+        vibd[0].stride    = sizeof(Vertex);
+        vibd[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        VkVertexInputAttributeDescription viad[4];
+        viad[0].location = 0;
+        viad[0].binding  = vibd[0].binding;
+        viad[0].format   = VK_FORMAT_R16G16B16_SNORM;
+        viad[0].offset   = offsetof(Vertex, p);
+
+        viad[1].location = 1;
+        viad[1].binding  = vibd[0].binding;
+        viad[1].format   = VK_FORMAT_R16_UNORM;
+        viad[1].offset   = offsetof(Vertex, z);
+
+        viad[2].location = 2;
+        viad[2].binding  = vibd[0].binding;
+        viad[2].format   = VK_FORMAT_R16_UINT;
+        viad[2].offset   = offsetof(Vertex, s);
+
+        viad[3].location = 3;
+        viad[3].binding  = vibd[0].binding;
+        viad[3].format   = VK_FORMAT_R8G8B8A8_UNORM;
+        viad[3].offset   = offsetof(Vertex, c);
+
+        VkPipelineVertexInputStateCreateInfo pvsis_ci;
+        pvsis_ci.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        pvsis_ci.pNext                           = NULL;
+        pvsis_ci.flags                           = 0;
+        pvsis_ci.vertexBindingDescriptionCount   = (U32)Length(vibd);
+        pvsis_ci.pVertexBindingDescriptions      = vibd;
+        pvsis_ci.vertexAttributeDescriptionCount = (U32)Length(viad);
+        pvsis_ci.pVertexAttributeDescriptions    = viad;
+
+        VkPipelineInputAssemblyStateCreateInfo pvias_ci;
+        pvias_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        pvias_ci.pNext                  = NULL;
+        pvias_ci.flags                  = 0;
+        pvias_ci.topology               = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+        pvias_ci.primitiveRestartEnable = VK_FALSE;
+
+        VkViewport viewport;
+        viewport.x        = 0.0f;
+        viewport.y        = (F32)app.vksc.ext.height;
+        viewport.width    = (F32)app.vksc.ext.width;
+
+        viewport.height   = -(F32)app.vksc.ext.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor;
+        scissor.offset.x      = 0;
+        scissor.offset.y      = 0;
+        scissor.extent.width  = app.vksc.ext.width;
+        scissor.extent.height = app.vksc.ext.height;
+
+        VkPipelineViewportStateCreateInfo pvs_ci;
+        pvs_ci.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        pvs_ci.pNext         = NULL;
+        pvs_ci.flags         = 0;
+        pvs_ci.viewportCount = 1;
+        pvs_ci.pViewports    = &viewport;
+        pvs_ci.scissorCount  = 1;
+        pvs_ci.pScissors     = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo prs_ci;
+        prs_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        prs_ci.pNext                   = NULL;
+        prs_ci.flags                   = 0;
+        prs_ci.depthClampEnable        = VK_FALSE;
+        prs_ci.rasterizerDiscardEnable = VK_FALSE;
+        prs_ci.polygonMode             = VK_POLYGON_MODE_FILL;
+        prs_ci.cullMode                = VK_CULL_MODE_NONE;
+        prs_ci.frontFace               = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        prs_ci.depthBiasEnable         = VK_FALSE;
+        prs_ci.depthBiasConstantFactor = 0.0f;
+        prs_ci.depthBiasClamp          = 0.0f;
+        prs_ci.depthBiasSlopeFactor    = 0.0f;
+        prs_ci.lineWidth               = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo pms_ci;
+        pms_ci.sType                 = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        pms_ci.pNext                 = NULL;
+        pms_ci.flags                 = 0;
+        pms_ci.rasterizationSamples  = VK_SAMPLE_COUNT_1_BIT;
+        pms_ci.sampleShadingEnable   = VK_FALSE;
+        pms_ci.minSampleShading      = 0.0f;
+        pms_ci.pSampleMask           = NULL;
+        pms_ci.alphaToCoverageEnable = VK_FALSE;
+        pms_ci.alphaToOneEnable      = VK_FALSE;
+
+        VkPipelineDepthStencilStateCreateInfo pdss_ci;
+        pdss_ci.sType                 = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        pdss_ci.pNext                 = NULL;
+        pdss_ci.flags                 = 0;
+        pdss_ci.depthTestEnable       = VK_TRUE;
+        pdss_ci.depthWriteEnable      = VK_TRUE;
+        pdss_ci.depthCompareOp        = VK_COMPARE_OP_GREATER_OR_EQUAL;
+        pdss_ci.depthBoundsTestEnable = VK_FALSE;
+        pdss_ci.stencilTestEnable     = VK_FALSE;
+        pdss_ci.front.failOp          = VK_STENCIL_OP_KEEP;
+        pdss_ci.front.passOp          = VK_STENCIL_OP_KEEP;
+        pdss_ci.front.depthFailOp     = VK_STENCIL_OP_KEEP;
+        pdss_ci.front.compareOp       = VK_COMPARE_OP_NEVER;
+        pdss_ci.front.compareMask     = 0;
+        pdss_ci.front.writeMask       = 0;
+        pdss_ci.front.reference       = 0;
+        pdss_ci.back.failOp           = VK_STENCIL_OP_KEEP;
+        pdss_ci.back.passOp           = VK_STENCIL_OP_KEEP;
+        pdss_ci.back.depthFailOp      = VK_STENCIL_OP_KEEP;
+        pdss_ci.back.compareOp        = VK_COMPARE_OP_NEVER;
+        pdss_ci.back.compareMask      = 0;
+        pdss_ci.back.writeMask        = 0;
+        pdss_ci.back.reference        = 0;
+        pdss_ci.minDepthBounds        = 0.0f;
+        pdss_ci.maxDepthBounds        = 1.0f;
+
+        VkPipelineColorBlendAttachmentState attachments[1];
+        attachments[0].blendEnable         = VK_TRUE;
+        attachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        attachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        attachments[0].colorBlendOp        = VK_BLEND_OP_ADD;
+        attachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachments[0].alphaBlendOp        = VK_BLEND_OP_ADD;
+        attachments[0].colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo pcbs_ci;
+        pcbs_ci.sType             = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        pcbs_ci.pNext             = NULL;
+        pcbs_ci.flags             = 0;
+        pcbs_ci.logicOpEnable     = VK_FALSE;
+        pcbs_ci.logicOp           = VK_LOGIC_OP_CLEAR;
+        pcbs_ci.attachmentCount   = (U32)Length(attachments);
+        pcbs_ci.pAttachments      = attachments;
+        pcbs_ci.blendConstants[0] = 0.0f;
+        pcbs_ci.blendConstants[1] = 0.0f;
+        pcbs_ci.blendConstants[2] = 0.0f;
+        pcbs_ci.blendConstants[3] = 0.0f;
+
+        VkPipelineDynamicStateCreateInfo pds_ci;
+        pds_ci.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        pds_ci.pNext             = NULL;
+        pds_ci.flags             = 0;
+        pds_ci.dynamicStateCount = 0;
+        pds_ci.pDynamicStates    = NULL;
+
+        VkPipelineCreationFeedback pipeline_feedback;
+        VkPipelineCreationFeedback stages_feedback[2];
+
+        VkPipelineRenderingCreateInfo        pr_ci;
+        VkPipelineCreationFeedbackCreateInfo pcf_ci;
+        VkGraphicsPipelineCreateInfo         gp_ci;
+        gp_ci .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pcf_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO;
+        pr_ci .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+
+        gp_ci .pNext = &pcf_ci;
+        pcf_ci.pNext = &pr_ci;
+        pr_ci .pNext = NULL;
+
+        gp_ci.flags               = 0;
+        gp_ci.stageCount          = (U32)Length(pss_ci);
+        gp_ci.pStages             = pss_ci;
+        gp_ci.pVertexInputState   = &pvsis_ci;
+        gp_ci.pInputAssemblyState = &pvias_ci;
+        gp_ci.pTessellationState  = NULL;
+        gp_ci.pViewportState      = &pvs_ci;
+        gp_ci.pRasterizationState = &prs_ci;
+        gp_ci.pMultisampleState   = &pms_ci;
+        gp_ci.pDepthStencilState  = &pdss_ci;
+        gp_ci.pColorBlendState    = &pcbs_ci;
+        gp_ci.pDynamicState       = &pds_ci;
+        gp_ci.layout              = app.draw_pll;
+        gp_ci.renderPass          = VK_NULL_HANDLE;
+        gp_ci.subpass             = 0;
+        gp_ci.basePipelineHandle  = VK_NULL_HANDLE;
+        gp_ci.basePipelineIndex   = 0;
+
+        pcf_ci.pPipelineCreationFeedback          = &pipeline_feedback;
+        pcf_ci.pipelineStageCreationFeedbackCount = (U32)Length(stages_feedback);
+        pcf_ci.pPipelineStageCreationFeedbacks    = stages_feedback;
+
+        pr_ci.viewMask                = 0;
+        pr_ci.colorAttachmentCount    = 1;
+        pr_ci.pColorAttachmentFormats = &app.vksc.fmt;
+        pr_ci.depthAttachmentFormat   = VulkanSwapChain::DepthFormat;
+        pr_ci.stencilAttachmentFormat = VulkanSwapChain::DepthFormat;
+
+        VK_CHECK(vkCreateGraphicsPipelines(app.vkctx.dev, VK_NULL_HANDLE, 1, &gp_ci, app.vkctx.ac, &app.draw_pl), result, ex0);
+
+        if (app.settings.flags & Settings::DebugBit)
+        {
+            if ((pipeline_feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) &&
+                (stages_feedback[0].flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) &&
+                (stages_feedback[1].flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT))
+            {
+                auto const total = pipeline_feedback.duration + stages_feedback[0].duration + stages_feedback[1].duration;
+                PrintConsole(GetStdHandle(STD_OUTPUT_HANDLE), "Draw Pipeline took %dus to compile (%d+(%d+%d))\n",
+                    total / 1000, pipeline_feedback.duration / 1000, stages_feedback[0].duration / 1000, stages_feedback[1].duration / 1000);
+            }
+        }
+
+        return true;
+    ex0:return false;
+    }
+
+    static void DestroyDrawPipeline(Application &app)
+    {
+        vkDestroyPipeline(app.vkctx.dev, app.draw_pl, app.vkctx.ac);
+    }
+
+    static jmn::B8 CreateDrawObjects(Application &app, jmn::Result &result)
+    {
+        if (!CreateDrawBuffers(app, result)) goto ex0;
+        if (!Create(app.vkctx.ac, app.vkctx.dev, 0, NULL, 0, NULL, app.draw_pll, result)) goto ex1;
+        if (!CreateDrawPipeline(app, result)) goto ex2;
+        return true;
+    ex2:vkDestroyPipelineLayout(app.vkctx.dev, app.draw_pll, app.vkctx.ac);
+    ex1:DestroyDrawBuffers(app);
+    ex0:return false;
+    }
+
+    static void DestroyDrawObjects(Application &app)
+    {
+        DestroyDrawPipeline(app);
+        vkDestroyPipelineLayout(app.vkctx.dev, app.draw_pll, app.vkctx.ac);
+        DestroyDrawBuffers(app);
+    }
+
     static void TransitionSwapChainImageToDraw(Application &app)
     {
         using namespace jmn;
@@ -589,13 +909,13 @@ namespace ApplicationInternal
         TransitionSwapChainImageToDraw(app);
 
         BeginDraw(app);
-        //{
-        //    VkDeviceSize offset = 0, size = app.draw_vtx_count * sizeof(Application::DrawVertex), stride = sizeof(Application::DrawVertex);
-        //    vkCmdBindVertexBuffers2(cb, 0, 1, &app.draw_buffer, &offset, &size, &stride);
-        //    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, app.draw_pl);
-        //    vkCmdDraw(cb, (U32)app.draw_vtx_count, 1, 0, 0);
-        //    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
-        //}
+        {
+            //VkDeviceSize offset = 0, size = app.draw_vtx_count * sizeof(Vertex), stride = sizeof(Vertex);
+            //vkCmdBindVertexBuffers2(cb, 0, 1, &app.draw_buffer, &offset, &size, &stride);
+            //vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, app.draw_pl);
+            //vkCmdDraw(cb, (U32)app.draw_vtx_count, 1, 0, 0);
+            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
+        }
         EndDraw(app);
 
         TransitionSwapChainImageToPresent(app);
@@ -667,9 +987,11 @@ jmn::B8 Create(HINSTANCE hInstance, Application &app, jmn::Result &result)
     if (!ApplicationInternal::CreateVulkanBackend(app, result)) goto ex3;
     if (!ApplicationInternal::CreateGUIBackend(app, result)) goto ex4;
     if (!Create(app.ac, result)) goto ex5;
+    if (!ApplicationInternal::CreateDrawObjects(app, result)) goto ex6;
 
     return true;
-//ex6:Destroy(app.ac);
+//ex7:ApplicationInternal::DestroyDrawObjects(app);
+ex6:Destroy(app.ac);
 ex5:ApplicationInternal::DestroyGUIBackend(app);
 ex4:ApplicationInternal::DestroyVulkanBackend(app);
 ex3:ApplicationInternal::DestroyMainWindow(app);
@@ -707,6 +1029,7 @@ ex0:return result;
 
 void Destroy(Application &app)
 {
+    ApplicationInternal::DestroyDrawObjects(app);
     Destroy(app.ac);
     ApplicationInternal::DestroyGUIBackend(app);
     ApplicationInternal::DestroyVulkanBackend(app);

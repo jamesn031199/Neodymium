@@ -56,7 +56,7 @@ namespace AudioCaptureInternal
         else while (packet_length)
         {
             HR_CHECK(ac.acc->GetBuffer((BYTE **)&packet_addr, (UINT32 *)&packet_length, &packet_flags, NULL, NULL), result, jmn::Result::ErrorGeneric, ex0);
-
+            HR_CHECK(ac.acc->ReleaseBuffer((UINT32)packet_length), result, jmn::Result::ErrorGeneric, ex0);
             HR_CHECK(ac.acc->GetNextPacketSize((UINT32 *)&packet_length), result, jmn::Result::ErrorGeneric, ex0);
         }
 
@@ -113,7 +113,6 @@ namespace AudioCaptureInternal
             Process(ac, result);
         }
 
-
         JMN_ASSERT(SUCCEEDED(ac.ac->Stop()));
     ex6:SafeRelease(ac.acc);
     ex5:CoTaskMemFree(ac.fmt);
@@ -132,6 +131,8 @@ jmn::B8 Create(AudioCapture &ac, jmn::Result &result)
 
     JMN_CHECK(ac.sync_event = CreateEvent(NULL, TRUE, FALSE, NULL), result, Result::ErrorGeneric, ex0);
     JMN_CHECK(ac.thread = CreateThread(NULL, 0, AudioCaptureInternal::ThreadEntryPoint, &ac, 0, NULL), result, Result::ErrorGeneric, ex1);
+
+    WaitForSingleObject(ac.sync_event, INFINITE);
 
     return true;
 //ex2:JMN_ASSERT(CloseHandle(ac.sync_event));

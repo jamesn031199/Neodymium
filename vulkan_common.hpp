@@ -8,8 +8,6 @@
 #  include <volk.h>
 #  pragma warning(pop)
 
-struct VulkanContext;
-
 jmn::Result Translate(VkResult);
 jmn::B8     SelectMemoryTypeIndex(VkPhysicalDeviceMemoryProperties const &pdmp, jmn::U32 memory_type_bits, VkMemoryPropertyFlags flags, jmn::U32 &index, jmn::Result &result);
 
@@ -40,8 +38,22 @@ jmn::Result Translate(VkResult vkresult)
 
     switch (vkresult)
     {
-        case VK_SUCCESS: return Result::Success;
-        default:         return Result::ErrorGeneric;
+        case VK_SUCCESS:
+            return Result::Success;
+        case VK_ERROR_OUT_OF_HOST_MEMORY:
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+        case VK_ERROR_TOO_MANY_OBJECTS:
+        case VK_ERROR_OUT_OF_POOL_MEMORY:
+            return Result::ErrorOutOfMemory;
+        case VK_ERROR_LAYER_NOT_PRESENT:
+        case VK_ERROR_EXTENSION_NOT_PRESENT:
+        case VK_ERROR_FEATURE_NOT_PRESENT:
+            return Result::ErrorNotFound;
+        case VK_ERROR_INCOMPATIBLE_DRIVER:
+        case VK_ERROR_FORMAT_NOT_SUPPORTED:
+            return Result::ErrorNotSupported;
+        default:
+            return Result::ErrorGeneric;
     }
 }
 
