@@ -15,9 +15,12 @@ struct AudioCapture
     IAudioClient            *ac;
     WAVEFORMATEX            *fmt;
     IAudioCaptureClient     *acc;
+    CRITICAL_SECTION         cs;
+    jmn::U32                 index, count;
+    jmn::V2F32              *raw_buffer;
 };
 
-jmn::B8 Create(AudioCapture &ac, jmn::Result &result);
+jmn::B8 Create(jmn::Allocator allocator, AudioCapture &ac, jmn::Result &result);
 void    Destroy(AudioCapture &ac);
 
 #endif // AUDIO_CAPTURE_INCLUDED
@@ -36,6 +39,67 @@ void    Destroy(AudioCapture &ac);
 namespace AudioCaptureInternal
 {
 
+    struct EntryPointData
+    {
+        jmn::Allocator allocator;
+        AudioCapture  &audio_capture;
+    };
+
+    static jmn::B8 CreateAudioObjects(AudioCapture &ac, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        HR_CHECK(CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY | COINIT_DISABLE_OLE1DDE), result, Result::ErrorGeneric, ex0);
+        HR_CHECK(CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, IID_PPV_ARGS(&ac.dev_enum)), result, Result::ErrorGeneric, ex1);
+        HR_CHECK(ac.dev_enum->GetDefaultAudioEndpoint(eRender, eConsole, &ac.dev), result, Result::ErrorGeneric, ex2);
+        HR_CHECK(ac.dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, (void **)&ac.ac), result, Result::ErrorGeneric, ex3);
+        HR_CHECK(ac.ac->GetMixFormat(&ac.fmt), result, Result::ErrorGeneric, ex4);
+        HR_CHECK(ac.ac->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 0, 0, ac.fmt, NULL), result, Result::ErrorGeneric, ex5);
+        HR_CHECK(ac.ac->GetService(IID_PPV_ARGS(&ac.acc)), result, Result::ErrorGeneric, ex5);
+        HR_CHECK(ac.ac->Start(), result, Result::ErrorGeneric, ex6);
+        JMN_CHECK(InitializeCriticalSectionAndSpinCount(&ac.cs, 4096), result, Result::ErrorGeneric, ex7);
+
+        return true;
+    //ex8:DeleteCriticalSection(&ac.cs);
+    ex7:JMN_ASSERT(SUCCEEDED(ac.ac->Stop()));
+    ex6:SafeRelease(ac.acc);
+    ex5:CoTaskMemFree(ac.fmt);
+    ex4:SafeRelease(ac.ac);
+    ex3:SafeRelease(ac.dev);
+    ex2:SafeRelease(ac.dev_enum);
+    ex1:CoUninitialize();
+    ex0:return false;
+    }
+
+    static void DestroyAudioObjects(AudioCapture &ac)
+    {
+        DeleteCriticalSection(&ac.cs);
+        JMN_ASSERT(SUCCEEDED(ac.ac->Stop()));
+        SafeRelease(ac.acc);
+        CoTaskMemFree(ac.fmt);
+        SafeRelease(ac.ac);
+        SafeRelease(ac.dev);
+        SafeRelease(ac.dev_enum);
+        CoUninitialize();
+    }
+
+    static jmn::B8 CreateAudioBuffers(AudioCapture &ac, jmn::Allocator allocator, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        ac.count = (U32)ac.fmt->nSamplesPerSec;
+
+        if (!allocator.Alloc(ac.count, ac.raw_buffer, result)) goto ex0;
+
+        return true;
+    ex0:return false;
+    }
+
+    static void DestroyAudioBuffers(AudioCapture &ac, jmn::Allocator allocator)
+    {
+        allocator.Free(ac.raw_buffer, ac.count);
+    }
+
     static jmn::B8 ProcessPCM(AudioCapture &, jmn::Result &result)
     {
         result = jmn::Result::ErrorNotSupported;
@@ -44,20 +108,45 @@ namespace AudioCaptureInternal
 
     static jmn::B8 ProcessFloat(AudioCapture &ac, jmn::Result &result)
     {
-        jmn::Addr  packet_addr   = jmn::NullAddr;
-        jmn::U32   packet_length = 0;
-        DWORD      packet_flags  = 0;
+        using namespace jmn;
 
-        HR_CHECK(ac.acc->GetNextPacketSize((UINT32 *)&packet_length), result, jmn::Result::ErrorGeneric, ex0);
+        Addr  packet_addr   = NullAddr;
+        U32   packet_length = 0;
+        DWORD packet_flags  = 0;
+
+        HR_CHECK(ac.acc->GetNextPacketSize((UINT32 *)&packet_length), result, Result::ErrorGeneric, ex0);
 
         if (!packet_length)
         {
         }
         else while (packet_length)
         {
-            HR_CHECK(ac.acc->GetBuffer((BYTE **)&packet_addr, (UINT32 *)&packet_length, &packet_flags, NULL, NULL), result, jmn::Result::ErrorGeneric, ex0);
-            HR_CHECK(ac.acc->ReleaseBuffer((UINT32)packet_length), result, jmn::Result::ErrorGeneric, ex0);
-            HR_CHECK(ac.acc->GetNextPacketSize((UINT32 *)&packet_length), result, jmn::Result::ErrorGeneric, ex0);
+            HR_CHECK(ac.acc->GetBuffer((BYTE **)&packet_addr, (UINT32 *)&packet_length, &packet_flags, NULL, NULL), result, Result::ErrorGeneric, ex0);
+
+            auto const packet_ptr = (V2F32 const *)packet_addr;
+
+            EnterCriticalSection(&ac.cs);
+            {
+                ac.index = JMN_WRAPPED_DEC(ac.index, packet_length, ac.count);
+                if (packet_flags & AUDCLNT_BUFFERFLAGS_SILENT)
+                {
+                    for (U32 i = 0; i < packet_length; ++i)
+                    {
+                        ac.raw_buffer[JMN_WRAPPED_INC(ac.index, i, ac.count)] ={};
+                    }
+                }
+                else
+                {
+                    for (U32 i = 0; i < packet_length; ++i)
+                    {
+                        ac.raw_buffer[JMN_WRAPPED_INC(ac.index, i, ac.count)] = packet_ptr[i];
+                    }
+                }
+            }
+            LeaveCriticalSection(&ac.cs);
+
+            HR_CHECK(ac.acc->ReleaseBuffer((UINT32)packet_length), result, Result::ErrorGeneric, ex0);
+            HR_CHECK(ac.acc->GetNextPacketSize((UINT32 *)&packet_length), result, Result::ErrorGeneric, ex0);
         }
 
         return true;
@@ -94,43 +183,32 @@ namespace AudioCaptureInternal
     {
         using namespace jmn;
 
-        auto &ac = *(AudioCapture *)lpParameter;
+        auto       result    = Result::Success;
+        auto const allocator = ((EntryPointData *)lpParameter)->allocator;
+        auto      &ac        = ((EntryPointData *)lpParameter)->audio_capture;
 
-        auto result = Result::Success;
-
-        HR_CHECK(CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY | COINIT_DISABLE_OLE1DDE), result, jmn::Result::ErrorGeneric, ex0);
-        HR_CHECK(CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, IID_PPV_ARGS(&ac.dev_enum)), result, jmn::Result::ErrorGeneric, ex1);
-        HR_CHECK(ac.dev_enum->GetDefaultAudioEndpoint(eRender, eConsole, &ac.dev), result, jmn::Result::ErrorGeneric, ex2);
-        HR_CHECK(ac.dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, (void **)&ac.ac), result, jmn::Result::ErrorGeneric, ex3);
-        HR_CHECK(ac.ac->GetMixFormat(&ac.fmt), result, jmn::Result::ErrorGeneric, ex4);
-        HR_CHECK(ac.ac->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 0, 0, ac.fmt, NULL), result, jmn::Result::ErrorGeneric, ex5);
-        HR_CHECK(ac.ac->GetService(IID_PPV_ARGS(&ac.acc)), result, jmn::Result::ErrorGeneric, ex5);
-        HR_CHECK(ac.ac->Start(), result, jmn::Result::ErrorGeneric, ex6);
+        if (!CreateAudioObjects(ac, result)) goto ex0;
+        if (!CreateAudioBuffers(ac, allocator, result)) goto ex1;
 
         // Currently checking audio format every tick, which isn't needed but not impactful in performance
         for (SetEvent(ac.sync_event); WaitForSingleObject(ac.sync_event, 0) == WAIT_OBJECT_0;)
-        {
-            Process(ac, result);
-        }
+            if (!Process(ac, result)) ResetEvent(ac.sync_event);
 
-        JMN_ASSERT(SUCCEEDED(ac.ac->Stop()));
-    ex6:SafeRelease(ac.acc);
-    ex5:CoTaskMemFree(ac.fmt);
-    ex4:SafeRelease(ac.ac);
-    ex3:SafeRelease(ac.dev);
-    ex2:SafeRelease(ac.dev_enum);
-    ex1:CoUninitialize();
+        DestroyAudioBuffers(ac, allocator);
+    ex1:DestroyAudioObjects(ac);
     ex0:return (DWORD)result;
     }
 
 }
 
-jmn::B8 Create(AudioCapture &ac, jmn::Result &result)
+jmn::B8 Create(jmn::Allocator allocator, AudioCapture &ac, jmn::Result &result)
 {
     using namespace jmn;
 
+    AudioCaptureInternal::EntryPointData data ={ allocator, ac };
+
     JMN_CHECK(ac.sync_event = CreateEvent(NULL, TRUE, FALSE, NULL), result, Result::ErrorGeneric, ex0);
-    JMN_CHECK(ac.thread = CreateThread(NULL, 0, AudioCaptureInternal::ThreadEntryPoint, &ac, 0, NULL), result, Result::ErrorGeneric, ex1);
+    JMN_CHECK(ac.thread = CreateThread(NULL, 0, AudioCaptureInternal::ThreadEntryPoint, &data, 0, NULL), result, Result::ErrorGeneric, ex1);
 
     WaitForSingleObject(ac.sync_event, INFINITE);
 

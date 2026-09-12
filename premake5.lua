@@ -50,7 +50,7 @@ workspace "Neodymium"
         
         intrinsics "On"
         
-        disablewarnings { "4061", "4201", "4505", "4533", "4577", "4710", "4711", "5045" }
+        disablewarnings { "4061", "4201", "4505", "4533", "4577", "4623", "4626", "4710", "4711", "5027", "5045" }
         
         files {
             "main.cpp",
