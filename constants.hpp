@@ -20,6 +20,8 @@ static inline jmn::U32       constexpr ApplicationVkVersion       = VK_API_VERSI
 static inline jmn::Size      constexpr ApplicationArenaSize       = jmn::GiB(1);
 static inline jmn::Size      constexpr ApplicationHeapSize        = jmn::GiB(1);
 
+static inline jmn::CString16 constexpr ApplicationVkPCFileName    = jmn::MakeCString(u"vulkanpipelinecache");
+
 static inline jmn::CString16 constexpr SettingsFileName           = jmn::MakeCString(u"Settings.txt");
 static inline jmn::CString8  constexpr DebugSettingName           = jmn::MakeCString("Debug");
 static inline jmn::CString8  constexpr VSyncSettingName           = jmn::MakeCString("VSync");

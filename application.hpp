@@ -40,6 +40,7 @@ struct Application
     WINDOWPLACEMENT      main_window_placement;
     HWND                 main_window;
     VulkanContext        vkctx;
+    VkPipelineCache      vkpc;
     VulkanSwapChain      vksc;
     VulkanInflightFrames vkif;
     AudioCapture         ac;
@@ -321,17 +322,73 @@ namespace ApplicationInternal
         DestroyWindowClass(app.window_class, app.hInstance);
     }
 
+    static jmn::B8 CreateVulkanPipelineCache(Application &app, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        B8 success = false;
+        auto const file = CreateFile((LPCWSTR)ApplicationVkPCFileName.string, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+        JMN_CHECK(file != INVALID_HANDLE_VALUE, result, Result::ErrorGeneric, ex0);
+
+        Size file_size = 0;
+        JMN_CHECK(GetFileSizeEx(file, (PLARGE_INTEGER)&file_size), result, Result::ErrorGeneric, ex1);
+
+        auto file_data = NullAddr;
+        if (!app.heap.Alloc(file_size, alignof(void *), file_data, result)) goto ex1;
+
+        VkPipelineCacheCreateInfo ci;
+        ci.sType           = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        ci.pNext           = NULL;
+        ci.flags           = 0;
+        ci.initialDataSize = (size_t)file_size;
+        ci.pInitialData    = (void const *)file_data;
+        VK_CHECK(vkCreatePipelineCache(app.vkctx.dev, &ci, app.vkctx.ac, &app.vkpc), result, ex2);
+
+        success = true;
+    ex2:app.heap.Free(file_data, file_size);
+    ex1:JMN_ASSERT(CloseHandle(file));
+    ex0:return success;
+    }
+
+    static void DestroyVulkanPipelineCache(Application &app)
+    {
+        using namespace jmn;
+
+        Size pc_size = 0;
+        if (vkGetPipelineCacheData(app.vkctx.dev, app.vkpc, (size_t *)&pc_size, NULL) == VK_SUCCESS)
+        {
+            if (auto const pc_data = app.heap.Alloc(pc_size, alignof(void *)))
+            {
+                if (vkGetPipelineCacheData(app.vkctx.dev, app.vkpc, (size_t *)&pc_size, (void *)pc_data) == VK_SUCCESS)
+                {
+                    auto const file = CreateFile((LPCWSTR)ApplicationVkPCFileName.string, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                    if (file != INVALID_HANDLE_VALUE)
+                    {
+                        DWORD bytes_written = 0;
+                        JMN_ASSERT(WriteFile(file, (LPCVOID)pc_data, (DWORD)pc_size, &bytes_written, NULL));
+                        JMN_ASSERT(pc_size == (Size)bytes_written);
+                        JMN_ASSERT(CloseHandle(file));
+                    }
+                }
+                app.heap.Free(pc_data, pc_size);
+            }
+        }
+        vkDestroyPipelineCache(app.vkctx.dev, app.vkpc, app.vkctx.ac);
+    }
+
     static jmn::B8 CreateVulkanBackend(Application &app, jmn::Result &result)
     {
         using namespace jmn;
 
         if (!Create(MakeAllocator(app.heap), ApplicationVkVersion, (app.settings.flags & Settings::DebugBit) ? VulkanDebugUtilsMessengerCallback : NULL, &app, app.vkctx, result)) goto ex0;
-        if (!Create(MakeAllocator(app.heap), app.main_window, app.hInstance, app.vkctx, app.settings, app.vksc, result)) goto ex1;
-        if (!Create(MakeAllocator(app.heap), app.vkctx, 2, app.vkif, result)) goto ex2;
+        if (!CreateVulkanPipelineCache(app, result)) goto ex1;
+        if (!Create(MakeAllocator(app.heap), app.main_window, app.hInstance, app.vkctx, app.settings, app.vksc, result)) goto ex2;
+        if (!Create(MakeAllocator(app.heap), app.vkctx, 2, app.vkif, result)) goto ex3;
 
         return true;
-    //ex3:Destroy(app.vkif, MakeAllocator(app.heap), app.vkctx);
-    ex2:Destroy(app.vksc, MakeAllocator(app.heap), app.vkctx);
+    //ex4:Destroy(app.vkif, MakeAllocator(app.heap), app.vkctx);
+    ex3:Destroy(app.vksc, MakeAllocator(app.heap), app.vkctx);
+    ex2:DestroyVulkanPipelineCache(app);
     ex1:Destroy(app.vkctx);
     ex0:return false;
     }
@@ -340,6 +397,7 @@ namespace ApplicationInternal
     {
         Destroy(app.vkif, MakeAllocator(app.heap), app.vkctx);
         Destroy(app.vksc, MakeAllocator(app.heap), app.vkctx);
+        DestroyVulkanPipelineCache(app);
         Destroy(app.vkctx);
     }
 
@@ -377,7 +435,7 @@ namespace ApplicationInternal
             ii.DescriptorPoolSize  = 1024;
             ii.MinImageCount       = app.vksc.mic;
             ii.ImageCount          = app.vksc.img_c;
-            ii.PipelineCache       = VK_NULL_HANDLE;
+            ii.PipelineCache       = app.vkpc;
             SetImGuiMainPipelineInfo(app, ii.PipelineInfoMain);
             ii.UseDynamicRendering = true;
             ii.Allocator           = app.vkctx.ac;
@@ -699,7 +757,7 @@ namespace ApplicationInternal
         pr_ci.depthAttachmentFormat   = VulkanSwapChain::DepthFormat;
         pr_ci.stencilAttachmentFormat = VulkanSwapChain::DepthFormat;
 
-        VK_CHECK(vkCreateGraphicsPipelines(app.vkctx.dev, VK_NULL_HANDLE, 1, &gp_ci, app.vkctx.ac, &app.draw_pl), result, ex0);
+        VK_CHECK(vkCreateGraphicsPipelines(app.vkctx.dev, app.vkpc, 1, &gp_ci, app.vkctx.ac, &app.draw_pl), result, ex0);
 
         if (app.settings.flags & Settings::DebugBit)
         {

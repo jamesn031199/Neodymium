@@ -46,6 +46,34 @@ namespace SettingsInternal
     static inline jmn::CString8 constexpr BooleanTrueTxt  = jmn::MakeCString("true");
     static inline jmn::CString8 constexpr BooleanFalseTxt = jmn::MakeCString("false");
 
+    static jmn::U64 StringToUnsignedInteger(jmn::C8 const *txt_beg, jmn::C8 const *txt_end)
+    {
+        using namespace jmn;
+
+        U64 val    = 0;
+        U64 factor = 1;
+        for (auto it = txt_end; it --> txt_beg;)
+        {
+            switch (*it)
+            {
+                case '0': val += factor * 0; break;
+                case '1': val += factor * 1; break;
+                case '2': val += factor * 2; break;
+                case '3': val += factor * 3; break;
+                case '4': val += factor * 4; break;
+                case '5': val += factor * 5; break;
+                case '6': val += factor * 6; break;
+                case '7': val += factor * 7; break;
+                case '8': val += factor * 8; break;
+                case '9': val += factor * 9; break;
+                case ' ': case '\t': default: return val;
+            }
+            factor *= 10;
+        }
+
+        return val;
+    }
+
     static char *WriteFileSTBSPCallback(char const *buffer, void *user_data, int length)
     {
         auto const file = (HANDLE)user_data;
@@ -87,6 +115,44 @@ namespace SettingsInternal
             return false;
         }
         return false;
+    }
+
+    static void Parse(jmn::C8 const *txt_beg, jmn::C8 const *txt_end, jmn::V2U32 &val)
+    {
+        using namespace jmn;
+
+        if (*txt_beg != '[') return;
+        if (*(txt_end - 1) != ']') return;
+
+        C8 const *val1_beg = txt_beg + 1;
+        C8 const *val1_end = NULL;
+        C8 const *val2_beg = NULL;
+        C8 const *val2_end = txt_end - 1;
+
+        // Find end of val1 and beginning of val2, indicated by comma character
+        for (val1_end = val1_beg; val1_end < txt_end; ++val1_end)
+            if (*val1_end == ',') break;
+
+        val2_beg = val1_end + 1;
+
+        // Trim whitespace from the end of the val1
+        for (; val1_beg < val1_end; --val1_end)
+            if ((*(val1_end - 1) != ' ') && (*(val1_end - 1) != '\t')) break;
+
+        // Trim whitespace from the beginning of the val1
+        for (; val1_beg < val1_end; ++val1_beg)
+            if ((*val1_beg != ' ') && (*val1_beg != '\t')) break;
+
+        // Trim whitespace from the end of the val2
+        for (; val2_beg < val2_end; --val2_end)
+            if ((*(val2_end - 1) != ' ') && (*(val2_end - 1) != '\t')) break;
+
+        // Trim whitespace from the beginning of the val1
+        for (; val2_beg < val2_end; ++val2_beg)
+            if ((*val2_beg != ' ') && (*val2_beg != '\t')) break;
+
+        val.x = (U32)StringToUnsignedInteger(val1_beg, val1_end);
+        val.y = (U32)StringToUnsignedInteger(val2_beg, val2_end);
     }
 
     static void InitializeDefault(Settings &settings)
@@ -146,6 +212,7 @@ namespace SettingsInternal
         }
         else if ((key_len == WindowSizeSettingName.length) && (strncmp(key_beg, WindowSizeSettingName.string, WindowSizeSettingName.length) == 0))
         {
+            Parse(val_beg, val_end, settings.window_size);
         }
     }
 
