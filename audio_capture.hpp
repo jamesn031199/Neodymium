@@ -15,9 +15,10 @@ struct AudioCapture
     IAudioClient            *ac;
     WAVEFORMATEX            *fmt;
     IAudioCaptureClient     *acc;
-    CRITICAL_SECTION         cs;
-    jmn::U32                 index, count;
-    jmn::V2F32              *raw_buffer;
+    CRITICAL_SECTION         sample_buffer_cs;
+    jmn::Size                sample_buffer_count;
+    jmn::Size                sample_buffer_index;
+    jmn::V2F32              *sample_buffer;
 };
 
 jmn::B8 Create(jmn::Allocator allocator, AudioCapture &ac, jmn::Result &result);
@@ -57,10 +58,10 @@ namespace AudioCaptureInternal
         HR_CHECK(ac.ac->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 0, 0, ac.fmt, NULL), result, Result::ErrorGeneric, ex5);
         HR_CHECK(ac.ac->GetService(IID_PPV_ARGS(&ac.acc)), result, Result::ErrorGeneric, ex5);
         HR_CHECK(ac.ac->Start(), result, Result::ErrorGeneric, ex6);
-        JMN_CHECK(InitializeCriticalSectionAndSpinCount(&ac.cs, 4096), result, Result::ErrorGeneric, ex7);
+        JMN_CHECK(InitializeCriticalSectionAndSpinCount(&ac.sample_buffer_cs, 4096), result, Result::ErrorGeneric, ex7);
 
         return true;
-    //ex8:DeleteCriticalSection(&ac.cs);
+    //ex8:DeleteCriticalSection(&ac.sample_buffer_cs);
     ex7:JMN_ASSERT(SUCCEEDED(ac.ac->Stop()));
     ex6:SafeRelease(ac.acc);
     ex5:CoTaskMemFree(ac.fmt);
@@ -73,7 +74,7 @@ namespace AudioCaptureInternal
 
     static void DestroyAudioObjects(AudioCapture &ac)
     {
-        DeleteCriticalSection(&ac.cs);
+        DeleteCriticalSection(&ac.sample_buffer_cs);
         JMN_ASSERT(SUCCEEDED(ac.ac->Stop()));
         SafeRelease(ac.acc);
         CoTaskMemFree(ac.fmt);
@@ -87,9 +88,10 @@ namespace AudioCaptureInternal
     {
         using namespace jmn;
 
-        ac.count = (U32)ac.fmt->nSamplesPerSec;
+        ac.sample_buffer_count = (Size)ac.fmt->nSamplesPerSec;
+        ac.sample_buffer_index = 0;
 
-        if (!allocator.Alloc(ac.count, ac.raw_buffer, result)) goto ex0;
+        if (!allocator.Alloc(ac.sample_buffer_count, ac.sample_buffer, result)) goto ex0;
 
         return true;
     ex0:return false;
@@ -97,7 +99,7 @@ namespace AudioCaptureInternal
 
     static void DestroyAudioBuffers(AudioCapture &ac, jmn::Allocator allocator)
     {
-        allocator.Free(ac.raw_buffer, ac.count);
+        allocator.Free(ac.sample_buffer, ac.sample_buffer_count);
     }
 
     static jmn::B8 ProcessPCM(AudioCapture &, jmn::Result &result)
@@ -125,25 +127,25 @@ namespace AudioCaptureInternal
 
             auto const packet_ptr = (V2F32 const *)packet_addr;
 
-            EnterCriticalSection(&ac.cs);
+            EnterCriticalSection(&ac.sample_buffer_cs);
             {
-                ac.index = JMN_WRAPPED_DEC(ac.index, packet_length, ac.count);
+                ac.sample_buffer_index = JMN_WRAPPED_DEC(ac.sample_buffer_index, packet_length, ac.sample_buffer_count);
                 if (packet_flags & AUDCLNT_BUFFERFLAGS_SILENT)
                 {
                     for (U32 i = 0; i < packet_length; ++i)
                     {
-                        ac.raw_buffer[JMN_WRAPPED_INC(ac.index, i, ac.count)] ={};
+                        ac.sample_buffer[JMN_WRAPPED_INC(ac.sample_buffer_index, i, ac.sample_buffer_count)] ={};
                     }
                 }
                 else
                 {
                     for (U32 i = 0; i < packet_length; ++i)
                     {
-                        ac.raw_buffer[JMN_WRAPPED_INC(ac.index, i, ac.count)] = packet_ptr[i];
+                        ac.sample_buffer[JMN_WRAPPED_INC(ac.sample_buffer_index, i, ac.sample_buffer_count)] = packet_ptr[i];
                     }
                 }
             }
-            LeaveCriticalSection(&ac.cs);
+            LeaveCriticalSection(&ac.sample_buffer_cs);
 
             HR_CHECK(ac.acc->ReleaseBuffer((UINT32)packet_length), result, Result::ErrorGeneric, ex0);
             HR_CHECK(ac.acc->GetNextPacketSize((UINT32 *)&packet_length), result, Result::ErrorGeneric, ex0);

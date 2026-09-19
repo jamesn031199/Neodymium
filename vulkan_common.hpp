@@ -2,6 +2,7 @@
 #  define VULKAN_COMMON_INCLUDED
 
 #  include <Hydrogen.hpp>
+#  include <Helium.hpp>
 
 #  pragma warning(push)
 #  pragma warning(disable:4820)
@@ -19,6 +20,67 @@ jmn::B8 Create(VkAllocationCallbacks const *ac, VkDevice dev, uint32_t set_layou
 
 jmn::B8 Allocate(VkDevice dev, VkCommandPool command_pool, VkCommandBufferLevel level, jmn::U32 command_buffer_count, VkCommandBuffer *command_buffer_array, jmn::Result &result);
 jmn::B8 AllocateDedicated(VkAllocationCallbacks const *ac, VkPhysicalDeviceMemoryProperties const &pdmp, VkDevice dev, VkBuffer buffer, VkMemoryPropertyFlags flags, VkDeviceMemory &memory, jmn::Result &result);
+
+void CmdBeginDebugUtilsLabel(VkCommandBuffer cb, jmn::C8 const *name, jmn::V4F32 color);
+void CmdInsertDebugUtilsLabel(VkCommandBuffer cb, jmn::C8 const *name, jmn::V4F32 color);
+void QueueBeginDebugUtilsLabel(VkQueue q, jmn::C8 const *name, jmn::V4F32 color);
+void QueueInsertDebugUtilsLabel(VkQueue q, jmn::C8 const *name, jmn::V4F32 color);
+jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkObjectType type, jmn::Handle handle, jmn::C8 const *name, jmn::Result &result);
+jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkObjectType type, jmn::Handle handle, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result);
+
+template<typename T> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, T const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_UNKNOWN, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkInstance            const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_INSTANCE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkPhysicalDevice      const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_PHYSICAL_DEVICE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkDevice              const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_DEVICE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkQueue               const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_QUEUE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkSemaphore           const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_SEMAPHORE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkCommandBuffer       const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_COMMAND_BUFFER, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkFence               const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_FENCE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkDeviceMemory        const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_DEVICE_MEMORY, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkBuffer              const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_BUFFER, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkImage               const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_IMAGE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkEvent               const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_EVENT, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkQueryPool           const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_QUERY_POOL, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkBufferView          const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_BUFFER_VIEW, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkImageView           const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_IMAGE_VIEW, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkShaderModule        const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_SHADER_MODULE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkPipelineCache       const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_PIPELINE_CACHE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkPipelineLayout      const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_PIPELINE_LAYOUT, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkRenderPass          const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_RENDER_PASS, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkPipeline            const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_PIPELINE, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkDescriptorSetLayout const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkSampler             const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_SAMPLER, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkDescriptorPool      const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_DESCRIPTOR_POOL, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkDescriptorSet       const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_DESCRIPTOR_SET, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkFramebuffer         const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_FRAMEBUFFER, (jmn::Handle)object, name, result); }
+template<> jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkCommandPool         const &object, jmn::C8 const *name, jmn::Result &result) { return SetDebugUtilsObjectName(dev, VK_OBJECT_TYPE_COMMAND_POOL, (jmn::Handle)object, name, result); }
+
+template<typename T> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, T const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_UNKNOWN, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkInstance            const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_INSTANCE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkPhysicalDevice      const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_PHYSICAL_DEVICE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkDevice              const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_DEVICE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkQueue               const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_QUEUE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkSemaphore           const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_SEMAPHORE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkCommandBuffer       const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_COMMAND_BUFFER, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkFence               const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_FENCE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkDeviceMemory        const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_DEVICE_MEMORY, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkBuffer              const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_BUFFER, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkImage               const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_IMAGE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkEvent               const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_EVENT, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkQueryPool           const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_QUERY_POOL, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkBufferView          const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_BUFFER_VIEW, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkImageView           const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_IMAGE_VIEW, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkShaderModule        const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_SHADER_MODULE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkPipelineCache       const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_PIPELINE_CACHE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkPipelineLayout      const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_PIPELINE_LAYOUT, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkRenderPass          const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_RENDER_PASS, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkPipeline            const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_PIPELINE, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkDescriptorSetLayout const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkSampler             const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_SAMPLER, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkDescriptorPool      const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_DESCRIPTOR_POOL, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkDescriptorSet       const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_DESCRIPTOR_SET, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkFramebuffer         const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_FRAMEBUFFER, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
+template<> jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkCommandPool         const &object, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result) { return SetDebugUtilsObjectTag(dev, VK_OBJECT_TYPE_COMMAND_POOL, (jmn::Handle)object, tag_id, tag_size, tag_data, result); }
 
 #define VK_CHECK(expr, resvar, jmplbl) do { VkResult _vkresult_ = expr; JMN_CHECK(_vkresult_ == VK_SUCCESS, resvar, Translate(_vkresult_), jmplbl); } while (0)
 
@@ -203,6 +265,85 @@ jmn::B8 AllocateDedicated(VkAllocationCallbacks const *ac, VkPhysicalDeviceMemor
     mdai.buffer = buffer;
 
     VK_CHECK(vkAllocateMemory(dev, &mai, ac, &memory), result, ex0);
+    return true;
+ex0:return false;
+}
+
+void CmdBeginDebugUtilsLabel(VkCommandBuffer cb, jmn::C8 const *name, jmn::V4F32 color)
+{
+    VkDebugUtilsLabelEXT dul;
+    dul.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    dul.pNext      = NULL;
+    dul.pLabelName = name;
+    dul.color[0]   = color.r;
+    dul.color[1]   = color.g;
+    dul.color[2]   = color.b;
+    dul.color[3]   = color.a;
+    vkCmdBeginDebugUtilsLabelEXT(cb, &dul);
+}
+
+void CmdInsertDebugUtilsLabel(VkCommandBuffer cb, jmn::C8 const *name, jmn::V4F32 color)
+{
+    VkDebugUtilsLabelEXT dul;
+    dul.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    dul.pNext      = NULL;
+    dul.pLabelName = name;
+    dul.color[0]   = color.r;
+    dul.color[1]   = color.g;
+    dul.color[2]   = color.b;
+    dul.color[3]   = color.a;
+    vkCmdInsertDebugUtilsLabelEXT(cb, &dul);
+}
+void QueueBeginDebugUtilsLabel(VkQueue q, jmn::C8 const *name, jmn::V4F32 color)
+{
+    VkDebugUtilsLabelEXT dul;
+    dul.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    dul.pNext      = NULL;
+    dul.pLabelName = name;
+    dul.color[0]   = color.r;
+    dul.color[1]   = color.g;
+    dul.color[2]   = color.b;
+    dul.color[3]   = color.a;
+    vkQueueBeginDebugUtilsLabelEXT(q, &dul);
+}
+
+void QueueInsertDebugUtilsLabel(VkQueue q, jmn::C8 const *name, jmn::V4F32 color)
+{
+    VkDebugUtilsLabelEXT dul;
+    dul.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    dul.pNext      = NULL;
+    dul.pLabelName = name;
+    dul.color[0]   = color.r;
+    dul.color[1]   = color.g;
+    dul.color[2]   = color.b;
+    dul.color[3]   = color.a;
+    vkQueueInsertDebugUtilsLabelEXT(q, &dul);
+}
+
+jmn::B8 SetDebugUtilsObjectName(VkDevice dev, VkObjectType type, jmn::Handle handle, jmn::C8 const *name, jmn::Result &result)
+{
+    VkDebugUtilsObjectNameInfoEXT duoni;
+    duoni.sType        = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+    duoni.pNext        = NULL;
+    duoni.objectType   = type;
+    duoni.objectHandle = handle;
+    duoni.pObjectName  = name;
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(dev, &duoni), result, ex0);
+    return true;
+ex0:return false;
+}
+
+jmn::B8 SetDebugUtilsObjectTag(VkDevice dev, VkObjectType type, jmn::Handle handle, jmn::U64 tag_id, jmn::Size tag_size, jmn::Addr tag_data, jmn::Result &result)
+{
+    VkDebugUtilsObjectTagInfoEXT duoti;
+    duoti.sType        = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_TAG_INFO_EXT;
+    duoti.pNext        = NULL;
+    duoti.objectType   = type;
+    duoti.objectHandle = handle;
+    duoti.tagName      = tag_id;
+    duoti.tagSize      = tag_size;
+    duoti.pTag         = (void const *)tag_data;
+    VK_CHECK(vkSetDebugUtilsObjectTagEXT(dev, &duoti), result, ex0);
     return true;
 ex0:return false;
 }

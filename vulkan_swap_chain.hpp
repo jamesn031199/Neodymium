@@ -10,6 +10,7 @@ struct VulkanSwapChain
 {
     static inline constexpr jmn::Size OutdatedBitIndex = 0;
 
+    static inline constexpr VkFormat ColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     static inline constexpr VkFormat DepthFormat = VK_FORMAT_D24_UNORM_S8_UINT;
 
     using Flags = jmn::B64;
@@ -37,9 +38,15 @@ struct VulkanSwapChain
     jmn::U32                      img_c;
     VkImage                      *img_a;
     VkImageView                  *imgv_a;
-    VkImageView                  *dps_imgv_a;
+    VkDeviceMemory                img_mem;
+    VkDeviceSize                  img_mem_col_beg;
+    VkDeviceSize                  img_mem_col_end;
+    VkDeviceSize                  img_mem_dps_beg;
+    VkDeviceSize                  img_mem_dps_end;
+    VkImage                       col_img;
     VkImage                       dps_img;
-    VkDeviceMemory                dps_mem;
+    VkImageView                  *col_imgv_a;
+    VkImageView                  *dps_imgv_a;
 };
 
 jmn::B8 Create(jmn::Allocator allocator, HWND window, HINSTANCE instance, VulkanContext const &ctx, Settings const &settings, VulkanSwapChain &vksc, jmn::Result &result);
@@ -220,10 +227,12 @@ namespace VulkanSwapChainInternal
         VK_CHECK(vkGetSwapchainImagesKHR(ctx.dev, vksc.sc, &vksc.img_c, NULL), result, ex0);
         if (!allocator.Realloc(vksc.img_a, old_img_c, vksc.img_c, vksc.img_a, result)) goto ex0;
         if (!allocator.Realloc(vksc.imgv_a, old_img_c, vksc.img_c, vksc.imgv_a, result)) goto ex1;
-        if (!allocator.Realloc(vksc.dps_imgv_a, old_img_c, vksc.img_c, vksc.dps_imgv_a, result)) goto ex2;
-        VK_CHECK(vkGetSwapchainImagesKHR(ctx.dev, vksc.sc, &vksc.img_c, vksc.img_a), result, ex3);
+        if (!allocator.Realloc(vksc.col_imgv_a, old_img_c, vksc.img_c, vksc.col_imgv_a, result)) goto ex2;
+        if (!allocator.Realloc(vksc.dps_imgv_a, old_img_c, vksc.img_c, vksc.dps_imgv_a, result)) goto ex3;
+        VK_CHECK(vkGetSwapchainImagesKHR(ctx.dev, vksc.sc, &vksc.img_c, vksc.img_a), result, ex4);
         return true;
-    ex3:allocator.Free(vksc.dps_imgv_a, vksc.img_c);
+    ex4:allocator.Free(vksc.dps_imgv_a, vksc.img_c);
+    ex3:allocator.Free(vksc.col_imgv_a, vksc.img_c);
     ex2:allocator.Free(vksc.imgv_a, vksc.img_c);
     ex1:allocator.Free(vksc.img_a, vksc.img_c);
     ex0:return false;
@@ -253,108 +262,141 @@ namespace VulkanSwapChainInternal
         return false;
     }
 
-    static jmn::B8 CreateDepthImage(VulkanSwapChain &vksc, VulkanContext const &ctx, jmn::Result &result)
+    static jmn::B8 CreateColorAndDepthImage(VulkanSwapChain &vksc, VulkanContext const &ctx, jmn::Result &result)
     {
+        using namespace jmn;
+
+        VkImageFormatListCreateInfo     col_imfl_ci, dps_imfl_ci;
+        VkImageCreateInfo               col_img_ci, dps_img_ci;
+        VkMemoryRequirements2           col_mr2, dps_mr2;
+        VkDeviceImageMemoryRequirements col_dimr, dps_dimr;
+
+        col_img_ci .sType                 = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        col_imfl_ci.sType                 = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+        col_img_ci .pNext                 = &col_imfl_ci;
+        col_imfl_ci.pNext                 = NULL;
+        col_img_ci .flags                 = 0;
+        col_img_ci .imageType             = VK_IMAGE_TYPE_2D;
+        col_img_ci .format                = VulkanSwapChain::ColorFormat;
+        col_img_ci .extent                = { vksc.ext.width, vksc.ext.height, 1 };
+        col_img_ci .mipLevels             = 1;
+        col_img_ci .arrayLayers           = vksc.img_c;
+        col_img_ci .samples               = VK_SAMPLE_COUNT_1_BIT;
+        col_img_ci .tiling                = VK_IMAGE_TILING_OPTIMAL;
+        col_img_ci .usage                 = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        col_img_ci .sharingMode           = VK_SHARING_MODE_EXCLUSIVE;
+        col_img_ci .queueFamilyIndexCount = 0;
+        col_img_ci .pQueueFamilyIndices   = NULL;
+        col_img_ci .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED;
+        col_imfl_ci.viewFormatCount       = 1;
+        col_imfl_ci.pViewFormats          = &VulkanSwapChain::ColorFormat;
+
+        dps_img_ci .sType                 = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        dps_imfl_ci.sType                 = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+        dps_img_ci .pNext                 = &dps_imfl_ci;
+        dps_imfl_ci.pNext                 = NULL;
+        dps_img_ci .flags                 = 0;
+        dps_img_ci .imageType             = VK_IMAGE_TYPE_2D;
+        dps_img_ci .format                = VulkanSwapChain::DepthFormat;
+        dps_img_ci .extent                = { vksc.ext.width, vksc.ext.height, 1 };
+        dps_img_ci .mipLevels             = 1;
+        dps_img_ci .arrayLayers           = vksc.img_c;
+        dps_img_ci .samples               = VK_SAMPLE_COUNT_1_BIT;
+        dps_img_ci .tiling                = VK_IMAGE_TILING_OPTIMAL;
+        dps_img_ci .usage                 = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        dps_img_ci .sharingMode           = VK_SHARING_MODE_EXCLUSIVE;
+        dps_img_ci .queueFamilyIndexCount = 0;
+        dps_img_ci .pQueueFamilyIndices   = NULL;
+        dps_img_ci .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED;
+        dps_imfl_ci.viewFormatCount       = 1;
+        dps_imfl_ci.pViewFormats          = &VulkanSwapChain::DepthFormat;
+
+        col_dimr.sType       = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS;
+        col_dimr.pNext       = NULL;
+        col_dimr.pCreateInfo = &col_img_ci;
+        col_dimr.planeAspect = VK_IMAGE_ASPECT_NONE;
+        dps_dimr.sType       = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS;
+        dps_dimr.pNext       = NULL;
+        dps_dimr.pCreateInfo = &dps_img_ci;
+        dps_dimr.planeAspect = VK_IMAGE_ASPECT_NONE;
+
+        col_mr2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+        col_mr2.pNext = NULL;
+        dps_mr2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+        dps_mr2.pNext = NULL;
+
+        vkGetDeviceImageMemoryRequirements(ctx.dev, &col_dimr, &col_mr2);
+        vkGetDeviceImageMemoryRequirements(ctx.dev, &dps_dimr, &dps_mr2);
+
+        vksc.img_mem_col_beg = 0;
+        vksc.img_mem_col_end = vksc.img_mem_col_beg + col_mr2.memoryRequirements.size;
+        vksc.img_mem_dps_beg = (VkDeviceSize)(vksc.img_mem_col_end + jmn::ComputeAlignmentOffset((Addr)vksc.img_mem_col_end, (Size)dps_mr2.memoryRequirements.alignment));
+        vksc.img_mem_dps_end = vksc.img_mem_dps_beg + dps_mr2.memoryRequirements.size;
+
         {
-            VkImageFormatListCreateInfo imfl_ci;
-            VkImageCreateInfo           img_ci;
-
-            img_ci .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-            imfl_ci.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
-
-            img_ci .pNext = &imfl_ci;
-            imfl_ci.pNext = NULL;
-
-            img_ci.flags                 = 0;
-            img_ci.imageType             = VK_IMAGE_TYPE_2D;
-            img_ci.format                = VulkanSwapChain::DepthFormat;
-            img_ci.extent                = { vksc.ext.width, vksc.ext.height, 1 };
-            img_ci.mipLevels             = 1;
-            img_ci.arrayLayers           = vksc.img_c;
-            img_ci.samples               = VK_SAMPLE_COUNT_1_BIT;
-            img_ci.tiling                = VK_IMAGE_TILING_OPTIMAL;
-            img_ci.usage                 = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-            img_ci.sharingMode           = VK_SHARING_MODE_EXCLUSIVE;
-            img_ci.queueFamilyIndexCount = 0;
-            img_ci.pQueueFamilyIndices   = NULL;
-            img_ci.initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED;
-
-            imfl_ci.viewFormatCount = 1;
-            imfl_ci.pViewFormats    = &VulkanSwapChain::DepthFormat;
-
-            VK_CHECK(vkCreateImage(ctx.dev, &img_ci, ctx.ac, &vksc.dps_img), result, ex0);
+            VkMemoryAllocateInfo mai;
+            mai.sType          = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            mai.pNext          = NULL;
+            mai.allocationSize = vksc.img_mem_dps_end;
+            if (!SelectMemoryTypeIndex(ctx.pd_mp2.memoryProperties, col_mr2.memoryRequirements.memoryTypeBits & dps_mr2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mai.memoryTypeIndex, result)) goto ex0;
+            VK_CHECK(vkAllocateMemory(ctx.dev, &mai, ctx.ac, &vksc.img_mem), result, ex0);
         }
+
+        VK_CHECK(vkCreateImage(ctx.dev, &col_img_ci, ctx.ac, &vksc.col_img), result, ex1);
+        VK_CHECK(vkCreateImage(ctx.dev, &dps_img_ci, ctx.ac, &vksc.dps_img), result, ex2);
+
+        VK_CHECK(vkBindImageMemory(ctx.dev, vksc.col_img, vksc.img_mem, vksc.img_mem_col_beg), result, ex3);
+        VK_CHECK(vkBindImageMemory(ctx.dev, vksc.dps_img, vksc.img_mem, vksc.img_mem_dps_beg), result, ex3);
+
+        VkImageViewCreateInfo col_imgv_ci, dps_imgv_ci;
+        U32                   col_imgv_i, dps_imgv_i;
+
+        col_imgv_ci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        col_imgv_ci.pNext            = NULL;
+        col_imgv_ci.flags            = 0;
+        col_imgv_ci.image            = vksc.col_img;
+        col_imgv_ci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        col_imgv_ci.format           = VulkanSwapChain::ColorFormat;
+        col_imgv_ci.components       ={ VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+        col_imgv_ci.subresourceRange ={ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+        dps_imgv_ci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        dps_imgv_ci.pNext            = NULL;
+        dps_imgv_ci.flags            = 0;
+        dps_imgv_ci.image            = vksc.dps_img;
+        dps_imgv_ci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        dps_imgv_ci.format           = VulkanSwapChain::DepthFormat;
+        dps_imgv_ci.components       ={ VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+        dps_imgv_ci.subresourceRange ={ VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1 };
+
+        for (col_imgv_i = 0; col_imgv_i < vksc.img_c; ++col_imgv_i)
         {
-            VkImageMemoryRequirementsInfo2 imri2;
-            imri2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
-            imri2.pNext = NULL;
-            imri2.image = vksc.dps_img;
-
-            VkMemoryDedicatedRequirements mdr;
-            VkMemoryRequirements2         mr2;
-
-            mr2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-            mdr.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
-
-            mr2.pNext = &mdr;
-            mdr.pNext = NULL;
-
-            vkGetImageMemoryRequirements2(ctx.dev, &imri2, &mr2);
-
-            VkMemoryDedicatedAllocateInfo mdai;
-            VkMemoryAllocateFlagsInfo     mafi;
-            VkMemoryAllocateInfo          mai;
-
-            mai .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            mafi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-            mdai.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
-
-            mai .pNext = &mafi;
-            mafi.pNext = mdr.prefersDedicatedAllocation ? &mdai : NULL;
-            mdai.pNext = NULL;
-
-            mai.allocationSize = mr2.memoryRequirements.size;
-            if (!SelectMemoryTypeIndex(ctx.pd_mp2.memoryProperties, mr2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mai.memoryTypeIndex, result)) goto ex1;
-
-            mafi.flags      = 0;
-            mafi.deviceMask = 0;
-
-            mdai.image  = vksc.dps_img;
-            mdai.buffer = VK_NULL_HANDLE;
-
-            VK_CHECK(vkAllocateMemory(ctx.dev, &mai, ctx.ac, &vksc.dps_mem), result, ex1);
+            col_imgv_ci.subresourceRange.baseArrayLayer = col_imgv_i;
+            VK_CHECK(vkCreateImageView(ctx.dev, &col_imgv_ci, ctx.ac, vksc.col_imgv_a + col_imgv_i), result, ex4);
         }
-        VK_CHECK(vkBindImageMemory(ctx.dev, vksc.dps_img, vksc.dps_mem, 0), result, ex2);
 
-        VkImageViewCreateInfo imgv_ci;
-        imgv_ci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        imgv_ci.pNext            = NULL;
-        imgv_ci.flags            = 0;
-        imgv_ci.image            = vksc.dps_img;
-        imgv_ci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-        imgv_ci.format           = VulkanSwapChain::DepthFormat;
-        imgv_ci.components       ={ VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
-        imgv_ci.subresourceRange ={ VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1 };
-
-        jmn::U32 imgv_i;
-        for (imgv_i = 0; imgv_i < vksc.img_c; ++imgv_i)
+        for (dps_imgv_i = 0; dps_imgv_i < vksc.img_c; ++dps_imgv_i)
         {
-            imgv_ci.subresourceRange.baseArrayLayer = imgv_i;
-            VK_CHECK(vkCreateImageView(ctx.dev, &imgv_ci, ctx.ac, vksc.dps_imgv_a + imgv_i), result, ex3);
+            dps_imgv_ci.subresourceRange.baseArrayLayer = dps_imgv_i;
+            VK_CHECK(vkCreateImageView(ctx.dev, &dps_imgv_ci, ctx.ac, vksc.dps_imgv_a + dps_imgv_i), result, ex5);
         }
 
         return true;
-    ex3:while (imgv_i --> 0) vkDestroyImageView(ctx.dev, vksc.dps_imgv_a[imgv_i], ctx.ac);
-    ex2:vkFreeMemory(ctx.dev, vksc.dps_mem, ctx.ac);
-    ex1:vkDestroyImage(ctx.dev, vksc.dps_img, ctx.ac);
+    ex5:while (dps_imgv_i --> 0) vkDestroyImageView(ctx.dev, vksc.dps_imgv_a[dps_imgv_i], ctx.ac);
+    ex4:while (col_imgv_i --> 0) vkDestroyImageView(ctx.dev, vksc.col_imgv_a[col_imgv_i], ctx.ac);
+    ex3:vkDestroyImage(ctx.dev, vksc.dps_img, ctx.ac);
+    ex2:vkDestroyImage(ctx.dev, vksc.col_img, ctx.ac);
+    ex1:vkFreeMemory(ctx.dev, vksc.img_mem, ctx.ac);
     ex0:return false;
     }
 
-    static void DestroyDepthImage(VulkanSwapChain &vksc, VulkanContext const &ctx)
+    static void DestroyColorAndDepthImage(VulkanSwapChain &vksc, VulkanContext const &ctx)
     {
         for (jmn::U32 i = vksc.img_c; i --> 0;) vkDestroyImageView(ctx.dev, vksc.dps_imgv_a[i], ctx.ac);
-        vkFreeMemory(ctx.dev, vksc.dps_mem, ctx.ac);
+        for (jmn::U32 i = vksc.img_c; i --> 0;) vkDestroyImageView(ctx.dev, vksc.col_imgv_a[i], ctx.ac);
         vkDestroyImage(ctx.dev, vksc.dps_img, ctx.ac);
+        vkDestroyImage(ctx.dev, vksc.col_img, ctx.ac);
+        vkFreeMemory(ctx.dev, vksc.img_mem, ctx.ac);
     }
 
     static void DestroyImageViews(VulkanSwapChain &vksc, VulkanContext const &ctx)
@@ -365,13 +407,14 @@ namespace VulkanSwapChainInternal
     static void DestroyImages(VulkanSwapChain &vksc, jmn::Allocator allocator)
     {
         allocator.Free(vksc.dps_imgv_a, vksc.img_c);
+        allocator.Free(vksc.col_imgv_a, vksc.img_c);
         allocator.Free(vksc.imgv_a, vksc.img_c);
         allocator.Free(vksc.img_a, vksc.img_c);
     }
 
     static void Reset(VulkanSwapChain &vksc, VulkanContext const &ctx)
     {
-        DestroyDepthImage(vksc, ctx);
+        DestroyColorAndDepthImage(vksc, ctx);
         DestroyImageViews(vksc, ctx);
         vksc.ext   ={ UINT32_MAX, UINT32_MAX };
         vksc.fmt   = VK_FORMAT_UNDEFINED;
@@ -540,7 +583,7 @@ jmn::B8 Recreate(VulkanSwapChain &vksc, jmn::Allocator allocator, VulkanContext 
 
     if (!VulkanSwapChainInternal::CreateImages(vksc, allocator, ctx, result)) goto ex1;
     if (!VulkanSwapChainInternal::CreateImageViews(vksc, ctx, result)) goto ex2;
-    if (!VulkanSwapChainInternal::CreateDepthImage(vksc, ctx, result)) goto ex3;
+    if (!VulkanSwapChainInternal::CreateColorAndDepthImage(vksc, ctx, result)) goto ex3;
 
     vksc.flags &=~ VulkanSwapChain::OutdatedBit;
     return true;

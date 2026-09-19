@@ -78,7 +78,9 @@ workspace "Neodymium"
         prebuildcommands  
             {
                 'glslangValidator --target-env vulkan1.4 --vn draw_vert_spv ../res/shaders/draw.vert.glsl -o ../draw.vert.spv',
-                'glslangValidator --target-env vulkan1.4 --vn draw_frag_spv ../res/shaders/draw.frag.glsl -o ../draw.frag.spv'
+                'glslangValidator --target-env vulkan1.4 --vn draw_frag_spv ../res/shaders/draw.frag.glsl -o ../draw.frag.spv',
+                'glslangValidator --target-env vulkan1.4 --vn blit_vert_spv ../res/shaders/blit.vert.glsl -o ../blit.vert.spv',
+                'glslangValidator --target-env vulkan1.4 --vn blit_frag_spv ../res/shaders/blit.frag.glsl -o ../blit.frag.spv'
             }
         
         filter "configurations:Dbg"

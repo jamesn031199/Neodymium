@@ -31,30 +31,41 @@ struct Application
         RunningBit = (Flags)1 << RunningBitIndex,
     };
 
-    HINSTANCE            hInstance;
-    jmn::MemoryArena     arena;
-    jmn::MemoryHeap      heap;
-    Flags                flags;
-    Settings             settings;
-    ATOM                 window_class; jmn::U8 _pad0[2];
-    WINDOWPLACEMENT      main_window_placement;
-    HWND                 main_window;
-    VulkanContext        vkctx;
-    VkPipelineCache      vkpc;
-    VulkanSwapChain      vksc;
-    VulkanInflightFrames vkif;
-    AudioCapture         ac;
+    HINSTANCE                     hInstance;
+    jmn::MemoryArena              arena;
+    jmn::MemoryHeap               heap;
+    Flags                         flags;
+    Settings                      settings;
+    ATOM                          window_class; jmn::U8 _pad0[2];
+    WINDOWPLACEMENT               main_window_placement;
+    HWND                          main_window;
+    VulkanContext                 vkctx;
+    VkDescriptorPool              vkdp;
+    VkPipelineCache               vkpc;
+    VulkanSwapChain               vksc;
+    VulkanInflightFrames          vkif;
+    AudioCapture                  ac;
 
-    VkPipelineLayout     draw_pll;
-    VkPipeline           draw_pl;
-    VkDeviceSize         buffer_size;
-    VkBuffer             draw_buffer;
-    VkDeviceMemory       draw_memory;
-    VkBuffer             copy_buffer;
-    VkDeviceMemory       copy_memory;
-    jmn::Addr            copy_addr;
-    jmn::U32             max_draw_count;
-    jmn::U32             draw_count;
+    VkSampler                     blit_sampler;
+    jmn::Size                     blit_dslb_c;
+    VkDescriptorSetLayoutBinding *blit_dslb;
+    VkDescriptorSetLayout         blit_dsl;
+    VkPipelineLayout              blit_pll;
+    VkPipeline                    blit_pl;
+    VkDescriptorSet              *blit_ds;
+
+    VkPipelineLayout              draw_pll;
+    VkPipeline                    draw_pl;
+    VkDeviceSize                  buffer_size;
+    VkBuffer                      draw_buffer;
+    VkDeviceMemory                draw_memory;
+    VkBuffer                      copy_buffer;
+    VkDeviceMemory                copy_memory;
+    jmn::Addr                     copy_addr;
+    jmn::U32                      max_draw_count;
+    jmn::U32                      draw_count;
+
+    jmn::V3F32                   *rgb_lookup;
 };
 
 jmn::B8     Create (HINSTANCE hInstance, Application &app, jmn::Result &result);
@@ -75,9 +86,13 @@ void        Destroy(Application &app);
 #    include "constants.hpp"
 #    include "draw.vert.spv"
 #    include "draw.frag.spv"
+#    include "blit.vert.spv"
+#    include "blit.frag.spv"
 
 namespace ApplicationInternal
 {
+
+    static void ToggleVSync(Application &app);
 
     static char *PrintConsoleSTBSPCallback(char const *buffer, void *user_data, int length)
     {
@@ -99,6 +114,8 @@ namespace ApplicationInternal
     {
         using namespace jmn;
 
+        auto result = Result::Success;
+
         if (message_id == WM_CREATE)
         {
             auto const ci = (LPCREATESTRUCT)lParam;
@@ -109,36 +126,39 @@ namespace ApplicationInternal
         auto &app = *(Application *)GetWindowLongPtr(window, GWLP_USERDATA);
         switch (message_id)
         {
-            case WM_CLOSE: PostQuitMessage((int)Result::Success); return 0;
+            case WM_CLOSE: goto Quit;
             case WM_KEYDOWN: switch (wParam)
             {
+                case 'V': ToggleVSync(app); return 0;
+                case VK_ESCAPE: goto Quit;
                 case VK_F11:
                 {
                     if (BitTestAndComplement64((LONG64 *)&app.settings.flags, Settings::FullScreenBitIndex))
                     {
                         SetWindowLong(app.main_window, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
-                        JMN_ASSERT(SetWindowPlacement(app.main_window, &app.main_window_placement));
-                        JMN_ASSERT(SetWindowPos(app.main_window, HWND_TOP, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE));
+                        JMN_CHECK(SetWindowPlacement(app.main_window, &app.main_window_placement), result, Result::ErrorGeneric, Quit);
+                        JMN_CHECK(SetWindowPos(app.main_window, HWND_TOP, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE), result, Result::ErrorGeneric, Quit);
                     }
                     else
                     {
                         auto const monitor = MonitorFromWindow(app.main_window, MONITOR_DEFAULTTONEAREST);
                         MONITORINFO monitor_info;
                         monitor_info.cbSize = sizeof(monitor_info);
-                        JMN_ASSERT(GetMonitorInfo(monitor, &monitor_info));
+                        JMN_CHECK(GetMonitorInfo(monitor, &monitor_info), result, Result::ErrorGeneric, Quit);
 
-                        JMN_ASSERT(GetWindowPlacement(app.main_window, &app.main_window_placement));
+                        JMN_CHECK(GetWindowPlacement(app.main_window, &app.main_window_placement), result, Result::ErrorGeneric, Quit);
 
                         SetWindowLong(app.main_window, GWL_STYLE, WS_POPUP | WS_VISIBLE);
-                        JMN_ASSERT(SetWindowPos(app.main_window, HWND_TOP,
+                        JMN_CHECK(SetWindowPos(app.main_window, HWND_TOP,
                             monitor_info.rcMonitor.left, monitor_info.rcMonitor.top,
                             monitor_info.rcMonitor.right - monitor_info.rcMonitor.left, monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
-                            SWP_FRAMECHANGED));
+                            SWP_FRAMECHANGED), result, Result::ErrorGeneric, Quit);
                     }
                 } return 0;
             }
         }
         return DefWindowProc(window, message_id, wParam, lParam);
+    Quit:PostQuitMessage((int)result); return 0;
     }
 
     static VkBool32 VKAPI_CALL VulkanDebugUtilsMessengerCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT, VkDebugUtilsMessengerCallbackDataEXT const *callback_data, void *)
@@ -344,10 +364,17 @@ namespace ApplicationInternal
         ci.pInitialData    = (void const *)file_data;
         VK_CHECK(vkCreatePipelineCache(app.vkctx.dev, &ci, app.vkctx.ac, &app.vkpc), result, ex2);
 
+        if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.vkpc, "Main Pipeline Cache", result)) goto ex3;
+
         success = true;
     ex2:app.heap.Free(file_data, file_size);
     ex1:JMN_ASSERT(CloseHandle(file));
     ex0:return success;
+
+    ex3:vkDestroyPipelineCache(app.vkctx.dev, app.vkpc, app.vkctx.ac);
+        app.heap.Free(file_data, file_size);
+        JMN_ASSERT(CloseHandle(file));
+        return false;
     }
 
     static void DestroyVulkanPipelineCache(Application &app)
@@ -376,6 +403,82 @@ namespace ApplicationInternal
         vkDestroyPipelineCache(app.vkctx.dev, app.vkpc, app.vkctx.ac);
     }
 
+    static jmn::B8 CreateVulkanObjects(Application &app, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        {
+            VkDescriptorPoolSize pool_sizes[] =
+            {
+                { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32 }
+            };
+
+            VkDescriptorPoolCreateInfo ci;
+            ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            ci.pNext         = NULL;
+            ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+            ci.maxSets       = 32;
+            ci.poolSizeCount = (U32)Length(pool_sizes);
+            ci.pPoolSizes    = pool_sizes;
+            VK_CHECK(vkCreateDescriptorPool(app.vkctx.dev, &ci, app.vkctx.ac, &app.vkdp), result, ex0);
+            if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.vkdp, "Main Descriptor Pool", result)) goto ex1;
+        }
+
+        {
+            VkSamplerCreateInfo ci;
+            ci.sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+            ci.pNext                   = NULL;
+            ci.flags                   = 0;
+            ci.magFilter               = VK_FILTER_LINEAR;
+            ci.minFilter               = VK_FILTER_LINEAR;
+            ci.mipmapMode              = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            ci.addressModeU            = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            ci.addressModeV            = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            ci.addressModeW            = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            ci.mipLodBias              = 0.0f;
+            ci.anisotropyEnable        = VK_FALSE;
+            ci.maxAnisotropy           = 0.0f;
+            ci.compareEnable           = VK_FALSE;
+            ci.compareOp               = VK_COMPARE_OP_NEVER;
+            ci.minLod                  = 0.0f;
+            ci.maxLod                  = 0.0f;
+            ci.borderColor             = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+            ci.unnormalizedCoordinates = VK_FALSE;
+            VK_CHECK(vkCreateSampler(app.vkctx.dev, &ci, app.vkctx.ac, &app.blit_sampler), result, ex1);
+            if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.blit_sampler, "Blit Sampler", result)) goto ex2;
+        }
+        {
+            app.blit_dslb_c = 1;
+            if (!app.heap.Alloc(app.blit_dslb_c, app.blit_dslb, result)) goto ex2;
+
+            app.blit_dslb[0] ={ 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &app.blit_sampler };
+
+            VkDescriptorSetLayoutCreateInfo ci;
+            ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            ci.pNext        = NULL;
+            ci.flags        = 0;
+            ci.bindingCount = (U32)app.blit_dslb_c;
+            ci.pBindings    = app.blit_dslb;
+            VK_CHECK(vkCreateDescriptorSetLayout(app.vkctx.dev, &ci, app.vkctx.ac, &app.blit_dsl), result, ex3);
+            if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.blit_dsl, "Blit Descriptor Set Layout", result)) goto ex4;
+        }
+
+        return true;
+    ex4:vkDestroyDescriptorSetLayout(app.vkctx.dev, app.blit_dsl, app.vkctx.ac);
+    ex3:app.heap.Free(app.blit_dslb, app.blit_dslb_c);
+    ex2:vkDestroySampler(app.vkctx.dev, app.blit_sampler, app.vkctx.ac);
+    ex1:vkDestroyDescriptorPool(app.vkctx.dev, app.vkdp, app.vkctx.ac);
+    ex0:return false;
+    }
+
+    static void DestroyVulkanObjects(Application &app)
+    {
+        vkDestroyDescriptorSetLayout(app.vkctx.dev, app.blit_dsl, app.vkctx.ac);
+        app.heap.Free(app.blit_dslb, app.blit_dslb_c);
+        vkDestroySampler(app.vkctx.dev, app.blit_sampler, app.vkctx.ac);
+        vkDestroyDescriptorPool(app.vkctx.dev, app.vkdp, app.vkctx.ac);
+    }
+
     static jmn::B8 CreateVulkanBackend(Application &app, jmn::Result &result)
     {
         using namespace jmn;
@@ -384,9 +487,11 @@ namespace ApplicationInternal
         if (!CreateVulkanPipelineCache(app, result)) goto ex1;
         if (!Create(MakeAllocator(app.heap), app.main_window, app.hInstance, app.vkctx, app.settings, app.vksc, result)) goto ex2;
         if (!Create(MakeAllocator(app.heap), app.vkctx, 2, app.vkif, result)) goto ex3;
+        if (!CreateVulkanObjects(app, result)) goto ex4;
 
         return true;
-    //ex4:Destroy(app.vkif, MakeAllocator(app.heap), app.vkctx);
+    //ex5:DestroyVulkanObjects(app);
+    ex4:Destroy(app.vkif, MakeAllocator(app.heap), app.vkctx);
     ex3:Destroy(app.vksc, MakeAllocator(app.heap), app.vkctx);
     ex2:DestroyVulkanPipelineCache(app);
     ex1:Destroy(app.vkctx);
@@ -395,6 +500,7 @@ namespace ApplicationInternal
 
     static void DestroyVulkanBackend(Application &app)
     {
+        DestroyVulkanObjects(app);
         Destroy(app.vkif, MakeAllocator(app.heap), app.vkctx);
         Destroy(app.vksc, MakeAllocator(app.heap), app.vkctx);
         DestroyVulkanPipelineCache(app);
@@ -465,21 +571,38 @@ namespace ApplicationInternal
         app.max_draw_count = (U32)app.ac.fmt->nSamplesPerSec;
         app.buffer_size = sizeof(Vertex) * app.max_draw_count;
 
-        if (!Create(app.vkctx.ac, app.vkctx.dev, app.buffer_size, VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT, app.draw_buffer, result)) goto ex0;
-        if (!AllocateDedicated(app.vkctx.ac, app.vkctx.pd_mp2.memoryProperties, app.vkctx.dev, app.draw_buffer, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, app.draw_memory, result)) goto ex1;
+        if (!app.heap.Alloc(app.max_draw_count, app.rgb_lookup, result)) goto ex0;
+
+        for (U32 i = 0; i < app.max_draw_count; ++i)
+        {
+            ImGui::ColorConvertHSVtoRGB((F32)i / (F32)app.max_draw_count, 1.0f, 1.0f, app.rgb_lookup[i].r, app.rgb_lookup[i].g, app.rgb_lookup[i].b);
+        }
+
+        if (!Create(app.vkctx.ac, app.vkctx.dev, app.buffer_size, VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT, app.draw_buffer, result)) goto ex1;
+        if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.draw_buffer, "Draw Buffer", result)) goto ex2;
+
+        if (!AllocateDedicated(app.vkctx.ac, app.vkctx.pd_mp2.memoryProperties, app.vkctx.dev, app.draw_buffer, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, app.draw_memory, result)) goto ex2;
+        if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.draw_memory, "Draw Memory", result)) goto ex3;
+
         VK_CHECK(vkBindBufferMemory(app.vkctx.dev, app.draw_buffer, app.draw_memory, 0), result, ex2);
 
-        if (!Create(app.vkctx.ac, app.vkctx.dev, app.buffer_size, VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT, app.copy_buffer, result)) goto ex2;
+
+        if (!Create(app.vkctx.ac, app.vkctx.dev, app.buffer_size, VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT, app.copy_buffer, result)) goto ex3;
+        if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.copy_buffer, "Draw's Copy Buffer", result)) goto ex4;
+
         if (!AllocateDedicated(app.vkctx.ac, app.vkctx.pd_mp2.memoryProperties, app.vkctx.dev, app.copy_buffer, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, app.copy_memory, result))
-            if (!AllocateDedicated(app.vkctx.ac, app.vkctx.pd_mp2.memoryProperties, app.vkctx.dev, app.copy_buffer, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, app.copy_memory, result)) goto ex3;
-        VK_CHECK(vkBindBufferMemory(app.vkctx.dev, app.copy_buffer, app.copy_memory, 0), result, ex4);
-        VK_CHECK(vkMapMemory(app.vkctx.dev, app.copy_memory, 0, app.buffer_size, 0, (void **)&app.copy_addr), result, ex4);
+            if (!AllocateDedicated(app.vkctx.ac, app.vkctx.pd_mp2.memoryProperties, app.vkctx.dev, app.copy_buffer, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, app.copy_memory, result)) goto ex4;
+        if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.copy_memory, "Draw's Copy Memory", result)) goto ex5;
+
+        VK_CHECK(vkBindBufferMemory(app.vkctx.dev, app.copy_buffer, app.copy_memory, 0), result, ex5);
+        VK_CHECK(vkMapMemory(app.vkctx.dev, app.copy_memory, 0, app.buffer_size, 0, (void **)&app.copy_addr), result, ex5);
 
         return true;
-    ex4:vkFreeMemory(app.vkctx.dev, app.copy_memory, app.vkctx.ac);
-    ex3:vkDestroyBuffer(app.vkctx.dev, app.copy_buffer, app.vkctx.ac);
-    ex2:vkFreeMemory(app.vkctx.dev, app.draw_memory, app.vkctx.ac);
-    ex1:vkDestroyBuffer(app.vkctx.dev, app.draw_buffer, app.vkctx.ac);
+    ex5:vkFreeMemory(app.vkctx.dev, app.copy_memory, app.vkctx.ac);
+    ex4:vkDestroyBuffer(app.vkctx.dev, app.copy_buffer, app.vkctx.ac);
+    ex3:vkFreeMemory(app.vkctx.dev, app.draw_memory, app.vkctx.ac);
+    ex2:vkDestroyBuffer(app.vkctx.dev, app.draw_buffer, app.vkctx.ac);
+    ex1:app.heap.Free(app.rgb_lookup, app.max_draw_count);
     ex0:return false;
     }
 
@@ -489,6 +612,7 @@ namespace ApplicationInternal
         vkDestroyBuffer(app.vkctx.dev, app.copy_buffer, app.vkctx.ac);
         vkFreeMemory(app.vkctx.dev, app.draw_memory, app.vkctx.ac);
         vkDestroyBuffer(app.vkctx.dev, app.draw_buffer, app.vkctx.ac);
+        app.heap.Free(app.rgb_lookup, app.max_draw_count);
     }
 
     static jmn::B8 CreateDrawPipeline(Application &app, jmn::Result &result)
@@ -611,10 +735,9 @@ namespace ApplicationInternal
 
         VkViewport viewport;
         viewport.x        = 0.0f;
-        viewport.y        = (F32)app.vksc.ext.height;
+        viewport.y        = 0.0f;
         viewport.width    = (F32)app.vksc.ext.width;
-
-        viewport.height   = -(F32)app.vksc.ext.height;
+        viewport.height   = (F32)app.vksc.ext.height;
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
 
@@ -758,6 +881,7 @@ namespace ApplicationInternal
         pr_ci.stencilAttachmentFormat = VulkanSwapChain::DepthFormat;
 
         VK_CHECK(vkCreateGraphicsPipelines(app.vkctx.dev, app.vkpc, 1, &gp_ci, app.vkctx.ac, &app.draw_pl), result, ex0);
+        if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.draw_pl, "Draw Pipeline", result)) goto ex1;
 
         if (app.settings.flags & Settings::DebugBit)
         {
@@ -772,6 +896,7 @@ namespace ApplicationInternal
         }
 
         return true;
+    ex1:vkDestroyPipeline(app.vkctx.dev, app.draw_pl, app.vkctx.ac);
     ex0:return false;
     }
 
@@ -780,12 +905,299 @@ namespace ApplicationInternal
         vkDestroyPipeline(app.vkctx.dev, app.draw_pl, app.vkctx.ac);
     }
 
+    static jmn::B8 CreateBlitPipeline(Application &app, jmn::Result &result)
+    {
+        using namespace jmn;
+
+        VkShaderModuleCreateInfo        sm_ci[2];
+        VkPipelineShaderStageCreateInfo pss_ci[2];
+        {
+            pss_ci[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            sm_ci[0] .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+
+            pss_ci[0].pNext = &sm_ci[0];
+            sm_ci[0] .pNext = NULL;
+
+            pss_ci[0].flags               = 0;
+            pss_ci[0].stage               = VK_SHADER_STAGE_VERTEX_BIT;
+            pss_ci[0].module              = VK_NULL_HANDLE;
+            pss_ci[0].pName               = "main";
+            pss_ci[0].pSpecializationInfo = NULL;
+
+            sm_ci[0].flags    = 0;
+            sm_ci[0].codeSize = sizeof(blit_vert_spv);
+            sm_ci[0].pCode    = blit_vert_spv;
+        }
+        {
+            pss_ci[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            sm_ci[1] .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+
+            pss_ci[1].pNext = &sm_ci[1];
+            sm_ci[1] .pNext = NULL;
+
+            pss_ci[1].flags               = 0;
+            pss_ci[1].stage               = VK_SHADER_STAGE_FRAGMENT_BIT;
+            pss_ci[1].module              = VK_NULL_HANDLE;
+            pss_ci[1].pName               = "main";
+            pss_ci[1].pSpecializationInfo = NULL;
+
+            sm_ci[1].flags    = 0;
+            sm_ci[1].codeSize = sizeof(blit_frag_spv);
+            sm_ci[1].pCode    = blit_frag_spv;
+        }
+
+        VkPipelineVertexInputStateCreateInfo pvsis_ci;
+        pvsis_ci.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        pvsis_ci.pNext                           = NULL;
+        pvsis_ci.flags                           = 0;
+        pvsis_ci.vertexBindingDescriptionCount   = 0;
+        pvsis_ci.pVertexBindingDescriptions      = NULL;
+        pvsis_ci.vertexAttributeDescriptionCount = 0;
+        pvsis_ci.pVertexAttributeDescriptions    = NULL;
+
+        VkPipelineInputAssemblyStateCreateInfo pvias_ci;
+        pvias_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        pvias_ci.pNext                  = NULL;
+        pvias_ci.flags                  = 0;
+        pvias_ci.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        pvias_ci.primitiveRestartEnable = VK_FALSE;
+
+        VkViewport viewport;
+        viewport.x        = 0.0f;
+        viewport.y        = (F32)app.vksc.ext.height;
+        viewport.width    = (F32)app.vksc.ext.width;
+        viewport.height   = -(F32)app.vksc.ext.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor;
+        scissor.offset.x      = 0;
+        scissor.offset.y      = 0;
+        scissor.extent.width  = app.vksc.ext.width;
+        scissor.extent.height = app.vksc.ext.height;
+
+        VkPipelineViewportStateCreateInfo pvs_ci;
+        pvs_ci.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        pvs_ci.pNext         = NULL;
+        pvs_ci.flags         = 0;
+        pvs_ci.viewportCount = 1;
+        pvs_ci.pViewports    = &viewport;
+        pvs_ci.scissorCount  = 1;
+        pvs_ci.pScissors     = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo prs_ci;
+        prs_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        prs_ci.pNext                   = NULL;
+        prs_ci.flags                   = 0;
+        prs_ci.depthClampEnable        = VK_FALSE;
+        prs_ci.rasterizerDiscardEnable = VK_FALSE;
+        prs_ci.polygonMode             = VK_POLYGON_MODE_FILL;
+        prs_ci.cullMode                = VK_CULL_MODE_BACK_BIT;
+        prs_ci.frontFace               = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        prs_ci.depthBiasEnable         = VK_FALSE;
+        prs_ci.depthBiasConstantFactor = 0.0f;
+        prs_ci.depthBiasClamp          = 0.0f;
+        prs_ci.depthBiasSlopeFactor    = 0.0f;
+        prs_ci.lineWidth               = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo pms_ci;
+        pms_ci.sType                 = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        pms_ci.pNext                 = NULL;
+        pms_ci.flags                 = 0;
+        pms_ci.rasterizationSamples  = VK_SAMPLE_COUNT_1_BIT;
+        pms_ci.sampleShadingEnable   = VK_FALSE;
+        pms_ci.minSampleShading      = 0.0f;
+        pms_ci.pSampleMask           = NULL;
+        pms_ci.alphaToCoverageEnable = VK_FALSE;
+        pms_ci.alphaToOneEnable      = VK_FALSE;
+
+        VkPipelineDepthStencilStateCreateInfo pdss_ci;
+        pdss_ci.sType                 = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        pdss_ci.pNext                 = NULL;
+        pdss_ci.flags                 = 0;
+        pdss_ci.depthTestEnable       = VK_TRUE;
+        pdss_ci.depthWriteEnable      = VK_TRUE;
+        pdss_ci.depthCompareOp        = VK_COMPARE_OP_GREATER_OR_EQUAL;
+        pdss_ci.depthBoundsTestEnable = VK_FALSE;
+        pdss_ci.stencilTestEnable     = VK_FALSE;
+        pdss_ci.front.failOp          = VK_STENCIL_OP_KEEP;
+        pdss_ci.front.passOp          = VK_STENCIL_OP_KEEP;
+        pdss_ci.front.depthFailOp     = VK_STENCIL_OP_KEEP;
+        pdss_ci.front.compareOp       = VK_COMPARE_OP_NEVER;
+        pdss_ci.front.compareMask     = 0;
+        pdss_ci.front.writeMask       = 0;
+        pdss_ci.front.reference       = 0;
+        pdss_ci.back.failOp           = VK_STENCIL_OP_KEEP;
+        pdss_ci.back.passOp           = VK_STENCIL_OP_KEEP;
+        pdss_ci.back.depthFailOp      = VK_STENCIL_OP_KEEP;
+        pdss_ci.back.compareOp        = VK_COMPARE_OP_NEVER;
+        pdss_ci.back.compareMask      = 0;
+        pdss_ci.back.writeMask        = 0;
+        pdss_ci.back.reference        = 0;
+        pdss_ci.minDepthBounds        = 0.0f;
+        pdss_ci.maxDepthBounds        = 1.0f;
+
+        VkPipelineColorBlendAttachmentState attachments[1];
+        attachments[0].blendEnable         = VK_FALSE;
+        attachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachments[0].colorBlendOp        = VK_BLEND_OP_ADD;
+        attachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachments[0].alphaBlendOp        = VK_BLEND_OP_ADD;
+        attachments[0].colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo pcbs_ci;
+        pcbs_ci.sType             = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        pcbs_ci.pNext             = NULL;
+        pcbs_ci.flags             = 0;
+        pcbs_ci.logicOpEnable     = VK_FALSE;
+        pcbs_ci.logicOp           = VK_LOGIC_OP_CLEAR;
+        pcbs_ci.attachmentCount   = (U32)Length(attachments);
+        pcbs_ci.pAttachments      = attachments;
+        pcbs_ci.blendConstants[0] = 0.0f;
+        pcbs_ci.blendConstants[1] = 0.0f;
+        pcbs_ci.blendConstants[2] = 0.0f;
+        pcbs_ci.blendConstants[3] = 0.0f;
+
+        VkPipelineDynamicStateCreateInfo pds_ci;
+        pds_ci.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        pds_ci.pNext             = NULL;
+        pds_ci.flags             = 0;
+        pds_ci.dynamicStateCount = 0;
+        pds_ci.pDynamicStates    = NULL;
+
+        VkPipelineCreationFeedback pipeline_feedback;
+        VkPipelineCreationFeedback stages_feedback[2];
+
+        VkPipelineRenderingCreateInfo        pr_ci;
+        VkPipelineCreationFeedbackCreateInfo pcf_ci;
+        VkGraphicsPipelineCreateInfo         gp_ci;
+        gp_ci .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pcf_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO;
+        pr_ci .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+
+        gp_ci .pNext = &pcf_ci;
+        pcf_ci.pNext = &pr_ci;
+        pr_ci .pNext = NULL;
+
+        gp_ci.flags               = 0;
+        gp_ci.stageCount          = (U32)Length(pss_ci);
+        gp_ci.pStages             = pss_ci;
+        gp_ci.pVertexInputState   = &pvsis_ci;
+        gp_ci.pInputAssemblyState = &pvias_ci;
+        gp_ci.pTessellationState  = NULL;
+        gp_ci.pViewportState      = &pvs_ci;
+        gp_ci.pRasterizationState = &prs_ci;
+        gp_ci.pMultisampleState   = &pms_ci;
+        gp_ci.pDepthStencilState  = &pdss_ci;
+        gp_ci.pColorBlendState    = &pcbs_ci;
+        gp_ci.pDynamicState       = &pds_ci;
+        gp_ci.layout              = app.blit_pll;
+        gp_ci.renderPass          = VK_NULL_HANDLE;
+        gp_ci.subpass             = 0;
+        gp_ci.basePipelineHandle  = VK_NULL_HANDLE;
+        gp_ci.basePipelineIndex   = 0;
+
+        pcf_ci.pPipelineCreationFeedback          = &pipeline_feedback;
+        pcf_ci.pipelineStageCreationFeedbackCount = (U32)Length(stages_feedback);
+        pcf_ci.pPipelineStageCreationFeedbacks    = stages_feedback;
+
+        pr_ci.viewMask                = 0;
+        pr_ci.colorAttachmentCount    = 1;
+        pr_ci.pColorAttachmentFormats = &VulkanSwapChain::ColorFormat;
+        pr_ci.depthAttachmentFormat   = VulkanSwapChain::DepthFormat;
+        pr_ci.stencilAttachmentFormat = VulkanSwapChain::DepthFormat;
+
+        VK_CHECK(vkCreateGraphicsPipelines(app.vkctx.dev, app.vkpc, 1, &gp_ci, app.vkctx.ac, &app.blit_pl), result, ex0);
+        if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.blit_pl, "Blit Pipeline", result)) goto ex1;
+
+        if (app.settings.flags & Settings::DebugBit)
+        {
+            if ((pipeline_feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) &&
+                (stages_feedback[0].flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) &&
+                (stages_feedback[1].flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT))
+            {
+                auto const total = pipeline_feedback.duration + stages_feedback[0].duration + stages_feedback[1].duration;
+                PrintConsole(GetStdHandle(STD_OUTPUT_HANDLE), "Blit Pipeline took %dus to compile (%d+(%d+%d))\n",
+                    total / 1000, pipeline_feedback.duration / 1000, stages_feedback[0].duration / 1000, stages_feedback[1].duration / 1000);
+            }
+        }
+
+        if (!app.heap.Alloc(app.vksc.img_c, app.blit_ds, result)) goto ex1;
+
+        {
+            auto const tm = app.arena.MakeTemporaryMemory();
+
+            VkDescriptorSetLayout *layouts = NULL;
+            if (!tm.arena.Push(app.vksc.img_c, layouts, result)) goto ex1;
+
+            for (U32 i = 0; i < app.vksc.img_c; ++i) layouts[i] = app.blit_dsl;
+
+            VkDescriptorSetAllocateInfo dsai;
+            dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            dsai.pNext              = NULL;
+            dsai.descriptorPool     = app.vkdp;
+            dsai.descriptorSetCount = app.vksc.img_c;
+            dsai.pSetLayouts        = layouts;
+            VK_CHECK(vkAllocateDescriptorSets(app.vkctx.dev, &dsai, app.blit_ds), result, ex1);
+
+            for (U32 i = 0; i < app.vksc.img_c; ++i)
+                if ((app.settings.flags & Settings::DebugBit) && !SetDebugUtilsObjectName(app.vkctx.dev, app.blit_ds[i], "Blit Descriptor Set", result)) goto ex1;
+
+        }
+        {
+            auto const tm = app.arena.MakeTemporaryMemory();
+
+            VkDescriptorImageInfo *dii = NULL;
+            VkWriteDescriptorSet  *wds = NULL;
+
+            if (!tm.arena.Push(app.vksc.img_c, dii, result)) goto ex2;
+            if (!tm.arena.Push(app.vksc.img_c, wds, result)) goto ex2;
+
+            for (U32 i = 0; i < app.vksc.img_c; ++i)
+            {
+                dii[i].sampler     = VK_NULL_HANDLE;
+                dii[i].imageView   = app.vksc.col_imgv_a[i];
+                dii[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+                wds[i].sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                wds[i].pNext            = NULL;
+                wds[i].dstSet           = app.blit_ds[i];
+                wds[i].dstBinding       = app.blit_dslb[0].binding;
+                wds[i].dstArrayElement  = 0;
+                wds[i].descriptorCount  = app.blit_dslb[0].descriptorCount;
+                wds[i].descriptorType   = app.blit_dslb[0].descriptorType;
+                wds[i].pImageInfo       = &dii[i];
+                wds[i].pBufferInfo      = NULL;
+                wds[i].pTexelBufferView = NULL;
+            }
+            vkUpdateDescriptorSets(app.vkctx.dev, app.vksc.img_c, wds, 0, NULL);
+        }
+
+        return true;
+    ex2:vkFreeDescriptorSets(app.vkctx.dev, app.vkdp, app.vksc.img_c, app.blit_ds);
+    ex1:vkDestroyPipeline(app.vkctx.dev, app.blit_pl, app.vkctx.ac);
+    ex0:return false;
+    }
+
+    static void DestroyBlitPipeline(Application &app)
+    {
+        vkFreeDescriptorSets(app.vkctx.dev, app.vkdp, app.vksc.img_c, app.blit_ds);
+        vkDestroyPipeline(app.vkctx.dev, app.blit_pl, app.vkctx.ac);
+    }
+
     static jmn::B8 CreateDrawObjects(Application &app, jmn::Result &result)
     {
         if (!CreateDrawBuffers(app, result)) goto ex0;
         if (!Create(app.vkctx.ac, app.vkctx.dev, 0, NULL, 0, NULL, app.draw_pll, result)) goto ex1;
-        if (!CreateDrawPipeline(app, result)) goto ex2;
+        if (!Create(app.vkctx.ac, app.vkctx.dev, 1, &app.blit_dsl, 0, NULL, app.blit_pll, result)) goto ex2;
+        if (!CreateDrawPipeline(app, result)) goto ex3;
+        if (!CreateBlitPipeline(app, result)) goto ex4;
         return true;
+    //ex5:DestroyBlitPipeline(app);
+    ex4:DestroyDrawPipeline(app);
+    ex3:vkDestroyPipelineLayout(app.vkctx.dev, app.blit_pll, app.vkctx.ac);
     ex2:vkDestroyPipelineLayout(app.vkctx.dev, app.draw_pll, app.vkctx.ac);
     ex1:DestroyDrawBuffers(app);
     ex0:return false;
@@ -793,7 +1205,9 @@ namespace ApplicationInternal
 
     static void DestroyDrawObjects(Application &app)
     {
+        DestroyBlitPipeline(app);
         DestroyDrawPipeline(app);
+        vkDestroyPipelineLayout(app.vkctx.dev, app.blit_pll, app.vkctx.ac);
         vkDestroyPipelineLayout(app.vkctx.dev, app.draw_pll, app.vkctx.ac);
         DestroyDrawBuffers(app);
     }
@@ -898,13 +1312,14 @@ namespace ApplicationInternal
         }
     }
 
-    static void TransitionSwapChainImageToDraw(Application &app)
+    static void TransitionImagesToDraw(Application &app)
     {
         using namespace jmn;
 
         auto const cb = app.vkif.cb[app.vkif.index];
 
         VkImageMemoryBarrier2 imb2[2];
+
         imb2[0].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         imb2[0].pNext               = NULL;
         imb2[0].srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -915,8 +1330,8 @@ namespace ApplicationInternal
         imb2[0].newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         imb2[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         imb2[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        imb2[0].image               = app.vksc.img_a[app.vksc.img_i];
-        imb2[0].subresourceRange    ={ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        imb2[0].image               = app.vksc.col_img;
+        imb2[0].subresourceRange    ={ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, app.vksc.img_i, 1 };
 
         imb2[1].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         imb2[1].pNext               = NULL;
@@ -953,7 +1368,7 @@ namespace ApplicationInternal
         VkRenderingAttachmentInfo color_attachments[1];
         color_attachments[0].sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         color_attachments[0].pNext              = NULL;
-        color_attachments[0].imageView          = app.vksc.imgv_a[app.vksc.img_i];
+        color_attachments[0].imageView          = app.vksc.col_imgv_a[app.vksc.img_i];
         color_attachments[0].imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         color_attachments[0].resolveMode        = VK_RESOLVE_MODE_NONE;
         color_attachments[0].resolveImageView   = VK_NULL_HANDLE;
@@ -1014,13 +1429,100 @@ namespace ApplicationInternal
         vkCmdEndRendering(cb);
     }
 
-    static void TransitionSwapChainImageToPresent(Application &app)
+    static void TransitionImagesToBlit(Application &app)
+    {
+        using namespace jmn;
+
+        auto const cb = app.vkif.cb[app.vkif.index];
+
+        VkImageMemoryBarrier2 imb2[2];
+
+        imb2[0].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        imb2[0].pNext               = NULL;
+        imb2[0].srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        imb2[0].srcAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        imb2[0].dstStageMask        = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        imb2[0].dstAccessMask       = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        imb2[0].oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        imb2[0].newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imb2[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[0].image               = app.vksc.col_img;
+        imb2[0].subresourceRange    ={ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, app.vksc.img_i, 1 };
+
+        imb2[1].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        imb2[1].pNext               = NULL;
+        imb2[1].srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        imb2[1].srcAccessMask       = VK_ACCESS_2_MEMORY_READ_BIT;
+        imb2[1].dstStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        imb2[1].dstAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        imb2[1].oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+        imb2[1].newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        imb2[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb2[1].image               = app.vksc.img_a[app.vksc.img_i];
+        imb2[1].subresourceRange    ={ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+        VkDependencyInfo di;
+        di.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        di.pNext                    = NULL;
+        di.dependencyFlags          = 0;
+        di.memoryBarrierCount       = 0;
+        di.pMemoryBarriers          = NULL;
+        di.bufferMemoryBarrierCount = 0;
+        di.pBufferMemoryBarriers    = NULL;
+        di.imageMemoryBarrierCount  = (U32)Length(imb2);
+        di.pImageMemoryBarriers     = imb2;
+        vkCmdPipelineBarrier2(cb, &di);
+    }
+
+    static void BlitImage(Application &app)
+    {
+        using namespace jmn;
+
+        auto const cb = app.vkif.cb[app.vkif.index];
+
+        VkRenderingAttachmentInfo color_attachments[1];
+        color_attachments[0].sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_attachments[0].pNext              = NULL;
+        color_attachments[0].imageView          = app.vksc.imgv_a[app.vksc.img_i];
+        color_attachments[0].imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_attachments[0].resolveMode        = VK_RESOLVE_MODE_NONE;
+        color_attachments[0].resolveImageView   = VK_NULL_HANDLE;
+        color_attachments[0].resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        color_attachments[0].loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachments[0].storeOp            = VK_ATTACHMENT_STORE_OP_STORE;
+        color_attachments[0].clearValue.color.float32[0] = 0.0f;
+        color_attachments[0].clearValue.color.float32[1] = 0.0f;
+        color_attachments[0].clearValue.color.float32[2] = 0.0f;
+        color_attachments[0].clearValue.color.float32[3] = 0.0f;
+
+        VkRenderingInfo ri;
+        ri.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.pNext                = NULL;
+        ri.flags                = 0;
+        ri.renderArea           ={ { 0, 0 }, app.vksc.ext };
+        ri.layerCount           = app.vksc.ial;
+        ri.viewMask             = 0;
+        ri.colorAttachmentCount = (U32)Length(color_attachments);
+        ri.pColorAttachments    = color_attachments;
+        ri.pDepthAttachment     = NULL;
+        ri.pStencilAttachment   = NULL;
+        vkCmdBeginRendering(cb, &ri);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, app.blit_pll, 0, 1, app.blit_ds + app.vksc.img_i, 0, NULL);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, app.blit_pl);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdEndRendering(cb);
+    }
+
+    static void TransitionImagesToPresent(Application &app)
     {
         using namespace jmn;
 
         auto const cb = app.vkif.cb[app.vkif.index];
 
         VkImageMemoryBarrier2 imb2[1];
+
         imb2[0].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         imb2[0].pNext               = NULL;
         imb2[0].srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1033,6 +1535,7 @@ namespace ApplicationInternal
         imb2[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         imb2[0].image               = app.vksc.img_a[app.vksc.img_i];
         imb2[0].subresourceRange    ={ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
         VkDependencyInfo di;
         di.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         di.pNext                    = NULL;
@@ -1044,6 +1547,21 @@ namespace ApplicationInternal
         di.imageMemoryBarrierCount  = (U32)Length(imb2);
         di.pImageMemoryBarriers     = imb2;
         vkCmdPipelineBarrier2(cb, &di);
+    }
+
+    static void ToggleVSync(Application &app)
+    {
+        app.settings.flags ^= Settings::VSyncBit;
+
+        // Use dynamic present mode switching if available, else just recreate the whole swap chain
+        if (app.vksc.spmc_c > 1)
+        {
+            UpdatePresentMode(app.vksc, app.settings);
+        }
+        else
+        {
+            app.vksc.flags |= VulkanSwapChain::OutdatedBit;
+        }
     }
 
     static jmn::B8 ProcessMessages(jmn::Result &result)
@@ -1075,8 +1593,10 @@ namespace ApplicationInternal
             SetImGuiMainPipelineInfo(app, new_pipeline_info);
             ImGui_ImplVulkan_CreateMainPipeline(&new_pipeline_info);
 
-            vkDestroyPipeline(app.vkctx.dev, app.draw_pl, app.vkctx.ac);
+            DestroyBlitPipeline(app);
+            DestroyDrawPipeline(app);
             if (!CreateDrawPipeline(app, result)) goto ex0;
+            if (!CreateBlitPipeline(app, result)) goto ex0;
         }
         return true;
     ex0:return false;
@@ -1087,6 +1607,7 @@ namespace ApplicationInternal
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
+
         //RecordImGuiFrame(app);
         ImGui::EndFrame();
         ImGui::Render();
@@ -1101,17 +1622,16 @@ namespace ApplicationInternal
         auto const vtx_ptr = (Vertex *)app.copy_addr;
         auto      &vtx_idx = app.draw_count;
 
-        EnterCriticalSection(&app.ac.cs);
+        EnterCriticalSection(&app.ac.sample_buffer_cs);
         {
-            auto const min = Min(app.ac.count, app.max_draw_count);
+            auto const min = JMN_MIN((U32)app.ac.sample_buffer_count, app.max_draw_count);
             for (U32 i = 0; i < min; ++i)
             {
                 auto const  vtx    = vtx_ptr + vtx_idx++;
-                auto const &sample = app.ac.raw_buffer[JMN_WRAPPED_INC(app.ac.index, i, app.ac.count)];
+                auto const &sample = app.ac.sample_buffer[JMN_WRAPPED_INC(app.ac.sample_buffer_index, i, app.ac.sample_buffer_count)];
                 auto const  t      = (F32)i / (F32)min;
 
-                V3F32 rgb;
-                ImGui::ColorConvertHSVtoRGB(t, 1.0f, 1.0f, rgb.r, rgb.g, rgb.b);
+                V3F32 rgb = app.rgb_lookup[i];
 
                 vtx->p.x = MapNormalizedS16(sample.x);
                 vtx->p.y = MapNormalizedS16(sample.y);
@@ -1123,7 +1643,7 @@ namespace ApplicationInternal
                 vtx->c.a = MapNormalizedU8(1.0f - t);
             }
         }
-        LeaveCriticalSection(&app.ac.cs);
+        LeaveCriticalSection(&app.ac.sample_buffer_cs);
     }
 
     static jmn::B8 AcquireFrame(Application &app, jmn::Result &result)
@@ -1151,13 +1671,18 @@ namespace ApplicationInternal
             cbbi.pInheritanceInfo = NULL;
             VK_CHECK(vkBeginCommandBuffer(cb, &cbbi), result, ex0);
         }
+
         UploadBuffers(app);
-        TransitionSwapChainImageToDraw(app);
+        TransitionImagesToDraw(app);
         BeginDraw(app);
         Draw(app);
         EndDraw(app);
-        TransitionSwapChainImageToPresent(app);
+        TransitionImagesToBlit(app);
+        BlitImage(app);
+        TransitionImagesToPresent(app);
+
         VK_CHECK(vkEndCommandBuffer(cb), result, ex0);
+
         return true;
     ex0:return false;
     }

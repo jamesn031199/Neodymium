@@ -533,40 +533,39 @@ namespace VulkanContextInternal
         if (!AppendInstanceLayers    (vkc.allocator, required_lyr_name_count, required_lyr_name_array, optional_lyr_name_count, optional_lyr_name_array, enabled_lyr_name_count, enabled_lyr_name_array, result)) goto ex0;
         if (!AppendInstanceExtensions(vkc.allocator, required_ext_name_count, required_ext_name_array, optional_ext_name_count, optional_ext_name_array, enabled_ext_name_count, enabled_ext_name_array, result)) goto ex0;
 
-        {
-            VkApplicationInfo ai;
-            ai.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-            ai.pNext              = NULL;
-            ai.pApplicationName   = NULL;
-            ai.applicationVersion = VK_MAKE_API_VERSION(0, 0, 0, 0);
-            ai.pEngineName        = NULL;
-            ai.engineVersion      = VK_MAKE_API_VERSION(0, 0, 0, 0);
-            ai.apiVersion         = api_version;
-            VkInstanceCreateInfo ci;
-            ci.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-            ci.pNext                   = NULL;
-            ci.flags                   = 0;
-            ci.pApplicationInfo        = &ai;
-            ci.enabledLayerCount       = enabled_lyr_name_count;
-            ci.ppEnabledLayerNames     = enabled_lyr_name_array;
-            ci.enabledExtensionCount   = enabled_ext_name_count;
-            ci.ppEnabledExtensionNames = enabled_ext_name_array;
-            VK_CHECK(vkCreateInstance(&ci, vkc.ac, &vkc.ins), result, ex0);
-        }
+        VkDebugUtilsMessengerCreateInfoEXT dbg_ci;
+        dbg_ci.sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        dbg_ci.pNext           = NULL;
+        dbg_ci.flags           = 0;
+        dbg_ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
+        dbg_ci.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
+        dbg_ci.pfnUserCallback = dbg_callback;
+        dbg_ci.pUserData       = dbg_user_data;
+
+        VkApplicationInfo ai;
+        ai.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+        ai.pNext              = NULL;
+        ai.pApplicationName   = NULL;
+        ai.applicationVersion = VK_MAKE_API_VERSION(0, 0, 0, 0);
+        ai.pEngineName        = NULL;
+        ai.engineVersion      = VK_MAKE_API_VERSION(0, 0, 0, 0);
+        ai.apiVersion         = api_version;
+        VkInstanceCreateInfo ins_ci;
+        ins_ci.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        ins_ci.pNext                   = vkCreateDebugUtilsMessengerEXT ? &dbg_ci : NULL;
+        ins_ci.flags                   = 0;
+        ins_ci.pApplicationInfo        = &ai;
+        ins_ci.enabledLayerCount       = enabled_lyr_name_count;
+        ins_ci.ppEnabledLayerNames     = enabled_lyr_name_array;
+        ins_ci.enabledExtensionCount   = enabled_ext_name_count;
+        ins_ci.ppEnabledExtensionNames = enabled_ext_name_array;
+        VK_CHECK(vkCreateInstance(&ins_ci, vkc.ac, &vkc.ins), result, ex0);
 
         volkLoadInstanceOnly(vkc.ins);
 
         if (vkCreateDebugUtilsMessengerEXT)
         {
-            VkDebugUtilsMessengerCreateInfoEXT ci;
-            ci.sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-            ci.pNext           = NULL;
-            ci.flags           = 0;
-            ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
-            ci.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
-            ci.pfnUserCallback = dbg_callback;
-            ci.pUserData       = dbg_user_data;
-            VK_CHECK(vkCreateDebugUtilsMessengerEXT(vkc.ins, &ci, vkc.ac, &vkc.dbg_msgr), result, ex1);
+            VK_CHECK(vkCreateDebugUtilsMessengerEXT(vkc.ins, &dbg_ci, vkc.ac, &vkc.dbg_msgr), result, ex1);
         }
 
         return true;
